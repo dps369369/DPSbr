@@ -1,0 +1,6 @@
+{
+  "name": "DPSbr",
+  "description": "Adaptive Bangla touch-typing tutor and speed analytics platform inspired by Keybr, with English guidance and multi-layout Bengali keyboard support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
