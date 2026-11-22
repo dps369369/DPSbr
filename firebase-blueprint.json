@@ -1,0 +1,189 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Stores a signed-in user's Bangla typing progress, unlocked characters, per-key stats, daily totals, and practice settings.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the profile owner."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "Display name shown in the Profile view."
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Gmail address of the authenticated user."
+        },
+        "totalLessons": {
+          "type": "integer",
+          "description": "Cumulative completed lesson count."
+        },
+        "totalCharsTyped": {
+          "type": "integer",
+          "description": "Cumulative Bangla characters typed."
+        },
+        "totalDurationMs": {
+          "type": "number",
+          "description": "Cumulative practice time in milliseconds."
+        },
+        "topWpm": {
+          "type": "number",
+          "description": "Highest WPM recorded across all lessons."
+        },
+        "unlockedChars": {
+          "type": "array",
+          "description": "List of unlocked Bangla characters in the adaptive curriculum."
+        },
+        "manualFocusChar": {
+          "type": "string",
+          "maxLength": 4,
+          "description": "Manually pinned focus Bangla character, or empty string."
+        },
+        "keyStats": {
+          "type": "object",
+          "description": "Map of Bangla character to cumulative hits, misses, totalTimeMs, recentWpm, and lastPracticedAt."
+        },
+        "dailyStats": {
+          "type": "object",
+          "description": "Map of YYYY-MM-DD date string to daily durationMs, lessons, charsTyped, and avgWpm."
+        },
+        "settings": {
+          "type": "object",
+          "description": "User layout, target WPM, daily goal, theme, and typing preferences."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest profile update."
+        }
+      },
+      "required": [
+        "ownerId",
+        "displayName",
+        "email",
+        "totalLessons",
+        "totalCharsTyped",
+        "totalDurationMs",
+        "topWpm",
+        "unlockedChars",
+        "manualFocusChar",
+        "keyStats",
+        "dailyStats",
+        "settings",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LessonEntry": {
+      "title": "LessonEntry",
+      "description": "Immutable record of a single completed Bangla typing practice lesson.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the user who completed the lesson."
+        },
+        "layout": {
+          "type": "string",
+          "enum": ["probhat", "unijoy", "jatiya", "ime"],
+          "maxLength": 16,
+          "description": "Keyboard layout used for the lesson."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["guided", "all", "conjuncts", "custom"],
+          "maxLength": 16,
+          "description": "Practice mode used for the lesson."
+        },
+        "wpm": {
+          "type": "number",
+          "description": "Words per minute achieved."
+        },
+        "cpm": {
+          "type": "number",
+          "description": "Characters per minute achieved."
+        },
+        "accuracy": {
+          "type": "number",
+          "description": "Accuracy percentage (0 to 100)."
+        },
+        "errorRate": {
+          "type": "number",
+          "description": "Error percentage (0 to 100)."
+        },
+        "durationMs": {
+          "type": "number",
+          "description": "Lesson duration in milliseconds."
+        },
+        "charCount": {
+          "type": "integer",
+          "description": "Number of target keystrokes in the lesson."
+        },
+        "errorCount": {
+          "type": "integer",
+          "description": "Number of errors made in the lesson."
+        },
+        "focusChar": {
+          "type": "string",
+          "maxLength": 4,
+          "description": "Focus character during the lesson, or empty string."
+        },
+        "unlockedChar": {
+          "type": "string",
+          "maxLength": 4,
+          "description": "Newly unlocked Bangla character after this lesson, or empty string."
+        },
+        "timestamp": {
+          "type": "number",
+          "description": "Epoch milliseconds when the lesson finished."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the lesson document was created."
+        }
+      },
+      "required": [
+        "ownerId",
+        "layout",
+        "mode",
+        "wpm",
+        "cpm",
+        "accuracy",
+        "errorRate",
+        "durationMs",
+        "charCount",
+        "errorCount",
+        "focusChar",
+        "unlockedChar",
+        "timestamp",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Owner-only user profile document storing cumulative Bangla typing stats, unlocked keys, and settings."
+    },
+    "/users/{userId}/lessons/{lessonId}": {
+      "schema": { "$ref": "#/entities/LessonEntry" },
+      "description": "Owner-only subcollection of completed typing lesson records."
+    }
+  }
+}

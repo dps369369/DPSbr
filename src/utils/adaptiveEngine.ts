@@ -19,7 +19,7 @@ const PROFILE_STORAGE_KEY = 'dpsbr_profile_v1';
 const SETTINGS_STORAGE_KEY = 'dpsbr_settings_v1';
 
 export const DEFAULT_SETTINGS: UserSettings = {
-  layout: 'probhat',
+  layout: 'jatiya',
   practiceMode: 'guided',
   targetWpm: 30,
   dailyGoalMinutes: 15,
@@ -34,10 +34,15 @@ export const DEFAULT_SETTINGS: UserSettings = {
   customText: SAMPLE_CUSTOM_TEXTS[0].text,
 };
 
-export function createInitialProfile(): ProfileData {
+export function createInitialProfile(email = '', displayName = 'Bangla Learner'): ProfileData {
   return {
-    displayName: 'Bangla Learner',
+    displayName,
+    email,
     createdAt: Date.now(),
+    totalLessons: 0,
+    totalCharsTyped: 0,
+    totalDurationMs: 0,
+    topWpm: 0,
     unlockedChars: [...STARTER_BANGLA_CHARS],
     manualFocusChar: null,
     keyStats: {},
@@ -357,6 +362,10 @@ export function recordLessonResult(
 
   let nextProfile: ProfileData = {
     ...profile,
+    totalLessons: (profile.totalLessons || profile.lessons.length) + 1,
+    totalCharsTyped: (profile.totalCharsTyped || 0) + Math.round(lesson.charCount),
+    totalDurationMs: (profile.totalDurationMs || 0) + Math.round(lesson.durationMs),
+    topWpm: Math.max(profile.topWpm || 0, lesson.wpm),
     keyStats: nextKeyStats,
     lessons: [lesson, ...profile.lessons].slice(0, 300),
     dailyStats: {

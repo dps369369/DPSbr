@@ -104,7 +104,12 @@ export interface UserSettings {
 
 export interface ProfileData {
   displayName: string;
+  email: string;
   createdAt: number;
+  totalLessons: number;
+  totalCharsTyped: number;
+  totalDurationMs: number;
+  topWpm: number;
   unlockedChars: string[];
   manualFocusChar: string | null;
   keyStats: Record<string, KeyStats>;

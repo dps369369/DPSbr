@@ -2,6 +2,7 @@ import {
   Check,
   Download,
   Edit3,
+  LogOut,
   Play,
   RotateCcw,
   Upload,
@@ -32,6 +33,7 @@ interface ProfileViewProps {
   onResetProfile: () => void;
   onPracticeChar: (ch: string) => void;
   onGoToPractice: () => void;
+  onSignOut: () => void;
 }
 
 type CharSortMode = 'order' | 'slowest' | 'fastest' | 'errors';
@@ -44,6 +46,7 @@ export function ProfileView({
   onResetProfile,
   onPracticeChar,
   onGoToPractice,
+  onSignOut,
 }: ProfileViewProps) {
   const [isEditingName, setIsEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(profile.displayName);
@@ -60,22 +63,32 @@ export function ProfileView({
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Aggregate summary metrics
+  // Aggregate summary metrics (uses cumulative Firestore counters so counts never get truncated)
   const summary = useMemo(() => {
     const lessons = profile.lessons;
-    const totalLessons = lessons.length;
-    const totalDurationMs = lessons.reduce((acc, l) => acc + l.durationMs, 0);
-    const topSpeed = lessons.reduce((max, l) => Math.max(max, l.wpm), 0);
+    const totalLessons = Math.max(profile.totalLessons || 0, lessons.length);
+    const totalDurationMs = Math.max(
+      profile.totalDurationMs || 0,
+      lessons.reduce((acc, l) => acc + l.durationMs, 0)
+    );
+    const totalCharsTyped = Math.max(
+      profile.totalCharsTyped || 0,
+      lessons.reduce((acc, l) => acc + l.charCount, 0)
+    );
+    const topSpeed = Math.max(
+      profile.topWpm || 0,
+      lessons.reduce((max, l) => Math.max(max, l.wpm), 0)
+    );
     const avgSpeed =
-      totalLessons > 0
+      lessons.length > 0
         ? Math.round(
-            (lessons.reduce((acc, l) => acc + l.wpm, 0) / totalLessons) * 10
+            (lessons.reduce((acc, l) => acc + l.wpm, 0) / lessons.length) * 10
           ) / 10
         : 0;
     const avgAccuracy =
-      totalLessons > 0
+      lessons.length > 0
         ? Math.round(
-            (lessons.reduce((acc, l) => acc + l.accuracy, 0) / totalLessons) * 10
+            (lessons.reduce((acc, l) => acc + l.accuracy, 0) / lessons.length) * 10
           ) / 10
         : 100;
 
@@ -85,12 +98,20 @@ export function ProfileView({
     return {
       totalLessons,
       totalDurationMs,
+      totalCharsTyped,
       topSpeed,
       avgSpeed,
       avgAccuracy,
       todayMinutes,
     };
-  }, [profile.lessons, profile.dailyStats]);
+  }, [
+    profile.lessons,
+    profile.dailyStats,
+    profile.totalLessons,
+    profile.totalDurationMs,
+    profile.totalCharsTyped,
+    profile.topWpm,
+  ]);
 
   // Chronological lessons for chart (max last 45)
   const chartLessons = useMemo(() => {
@@ -285,6 +306,12 @@ export function ProfileView({
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+            {profile.email && (
+              <>
+                <span>{profile.email}</span>
+                <span aria-hidden="true">·</span>
+              </>
+            )}
             <span>Active Layout: {BANGLA_LAYOUTS[settings.layout].name}</span>
             <span aria-hidden="true">·</span>
             <span className="font-mono-tabular">
@@ -354,6 +381,14 @@ export function ProfileView({
               <span>Reset</span>
             </button>
           )}
+          <button
+            type="button"
+            onClick={onSignOut}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Sign Out</span>
+          </button>
         </div>
       </section>
 

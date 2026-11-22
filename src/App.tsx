@@ -3,23 +3,35 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { onAuthStateChanged, signOut, User } from 'firebase/auth';
 import { useCallback, useEffect, useState } from 'react';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { GuideView } from './components/GuideView';
 import { Header } from './components/Header';
 import { LayoutsView } from './components/LayoutsView';
+import { LoginGate } from './components/LoginGate';
 import { PracticeView } from './components/PracticeView';
 import { ProfileView } from './components/ProfileView';
 import { SettingsModal } from './components/SettingsModal';
 import { BANGLA_LESSON_CHARS } from './data/banglaCorpus';
+import { auth } from './firebase';
 import { LessonRecord, NavTab, ProfileData, UserSettings } from './types/typing';
 import {
   createInitialProfile,
-  loadProfile,
-  loadSettings,
+  DEFAULT_SETTINGS,
   recordLessonResult,
-  saveProfile,
-  saveSettings,
 } from './utils/adaptiveEngine';
+import {
+  ensureUserDocument,
+  importProfileToFirestore,
+  resetProfileInFirestore,
+  saveLessonToFirestore,
+  subscribeToUserLessons,
+  subscribeToUserProfile,
+  updateDisplayNameInFirestore,
+  updateFocusOrUnlockedInFirestore,
+  updateSettingsInFirestore,
+} from './utils/firestoreSync';
 
 function getInitialTab(): NavTab {
   if (typeof window === 'undefined') return 'practice';
@@ -31,11 +43,99 @@ function getInitialTab(): NavTab {
   return 'practice';
 }
 
-export default function App() {
+function DPSbrApp() {
+  const [authReady, setAuthReady] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [profileReady, setProfileReady] = useState(false);
+  const [syncError, setSyncError] = useState<Error | null>(null);
+
   const [activeTab, setActiveTab] = useState<NavTab>(getInitialTab);
-  const [settings, setSettings] = useState<UserSettings>(() => loadSettings());
-  const [profile, setProfile] = useState<ProfileData>(() => loadProfile());
+  const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
+  const [profile, setProfile] = useState<ProfileData>(() => createInitialProfile());
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  if (syncError) {
+    throw syncError;
+  }
+
+  // Track Firebase Auth session
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser);
+      setAuthReady(true);
+      if (!firebaseUser) {
+        setProfileReady(false);
+        setProfile(createInitialProfile());
+        setSettings(DEFAULT_SETTINGS);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // Subscribe to Firestore user profile & lessons when signed in
+  useEffect(() => {
+    if (!user) return;
+
+    let unsubProfile: (() => void) | null = null;
+    let unsubLessons: (() => void) | null = null;
+    let cancelled = false;
+
+    const initAndSubscribe = async () => {
+      try {
+        await ensureUserDocument(
+          user.uid,
+          user.email || '',
+          user.displayName || 'Bangla Learner',
+          DEFAULT_SETTINGS
+        );
+        if (cancelled) return;
+
+        unsubProfile = subscribeToUserProfile(
+          user.uid,
+          (profileSlice, settingsSlice) => {
+            setProfile((prev) => ({
+              ...prev,
+              ...profileSlice,
+            }));
+            setSettings(settingsSlice);
+            setProfileReady(true);
+          },
+          () => {
+            void ensureUserDocument(
+              user.uid,
+              user.email || '',
+              user.displayName || 'Bangla Learner',
+              DEFAULT_SETTINGS
+            );
+          },
+          (err) => setSyncError(err)
+        );
+
+        unsubLessons = subscribeToUserLessons(
+          user.uid,
+          (lessons) => {
+            setProfile((prev) => ({
+              ...prev,
+              lessons,
+            }));
+          },
+          (err) => setSyncError(err)
+        );
+      } catch (err) {
+        if (!cancelled) {
+          setSyncError(err instanceof Error ? err : new Error(String(err)));
+        }
+      }
+    };
+
+    void initAndSubscribe();
+
+    return () => {
+      cancelled = true;
+      unsubProfile?.();
+      unsubLessons?.();
+    };
+  }, [user]);
 
   // Sync Tailwind dark mode class
   useEffect(() => {
@@ -47,16 +147,6 @@ export default function App() {
     }
   }, [settings.theme]);
 
-  // Persist settings
-  useEffect(() => {
-    saveSettings(settings);
-  }, [settings]);
-
-  // Persist profile
-  useEffect(() => {
-    saveProfile(profile);
-  }, [profile]);
-
   const handleSelectTab = useCallback((tab: NavTab) => {
     setActiveTab(tab);
     if (typeof window !== 'undefined') {
@@ -65,9 +155,20 @@ export default function App() {
     }
   }, []);
 
-  const handleUpdateSettings = useCallback((partial: Partial<UserSettings>) => {
-    setSettings((prev) => ({ ...prev, ...partial }));
-  }, []);
+  const handleUpdateSettings = useCallback(
+    (partial: Partial<UserSettings>) => {
+      setSettings((prev) => {
+        const next = { ...prev, ...partial };
+        if (user) {
+          void updateSettingsInFirestore(user.uid, next).catch((err) =>
+            setSyncError(err instanceof Error ? err : new Error(String(err)))
+          );
+        }
+        return next;
+      });
+    },
+    [user]
+  );
 
   const handleCompleteLesson = useCallback(
     (
@@ -81,42 +182,95 @@ export default function App() {
         settings.targetWpm
       );
       setProfile(res.updatedProfile);
+      if (user) {
+        const finalLesson =
+          res.newlyUnlocked
+            ? { ...lesson, unlockedChar: res.newlyUnlocked }
+            : lesson;
+        void saveLessonToFirestore(user.uid, res.updatedProfile, finalLesson).catch((err) =>
+          setSyncError(err instanceof Error ? err : new Error(String(err)))
+        );
+      }
       return res.newlyUnlocked;
     },
-    [profile, settings.targetWpm]
+    [profile, settings.targetWpm, user]
   );
 
-  const handleSelectFocusChar = useCallback((ch: string | null) => {
-    setProfile((prev) => ({
-      ...prev,
-      manualFocusChar: ch,
-    }));
-  }, []);
+  const handleSelectFocusChar = useCallback(
+    (ch: string | null) => {
+      setProfile((prev) => {
+        if (user) {
+          void updateFocusOrUnlockedInFirestore(user.uid, prev.unlockedChars, ch).catch(
+            (err) => setSyncError(err instanceof Error ? err : new Error(String(err)))
+          );
+        }
+        return {
+          ...prev,
+          manualFocusChar: ch,
+        };
+      });
+    },
+    [user]
+  );
 
-  const handleUnlockUpToChar = useCallback((ch: string) => {
-    const targetIdx = BANGLA_LESSON_CHARS.indexOf(ch);
-    if (targetIdx === -1) return;
-    setProfile((prev) => {
-      const merged = new Set(prev.unlockedChars);
-      for (let i = 0; i <= targetIdx; i++) {
-        merged.add(BANGLA_LESSON_CHARS[i]);
-      }
-      return {
-        ...prev,
-        unlockedChars: BANGLA_LESSON_CHARS.filter((c) => merged.has(c)),
-        manualFocusChar: ch,
-      };
-    });
-  }, []);
+  const handleUnlockUpToChar = useCallback(
+    (ch: string) => {
+      const targetIdx = BANGLA_LESSON_CHARS.indexOf(ch);
+      if (targetIdx === -1) return;
+      setProfile((prev) => {
+        const merged = new Set(prev.unlockedChars);
+        for (let i = 0; i <= targetIdx; i++) {
+          merged.add(BANGLA_LESSON_CHARS[i]);
+        }
+        const nextUnlocked = BANGLA_LESSON_CHARS.filter((c) => merged.has(c));
+        if (user) {
+          void updateFocusOrUnlockedInFirestore(user.uid, nextUnlocked, ch).catch((err) =>
+            setSyncError(err instanceof Error ? err : new Error(String(err)))
+          );
+        }
+        return {
+          ...prev,
+          unlockedChars: nextUnlocked,
+          manualFocusChar: ch,
+        };
+      });
+    },
+    [user]
+  );
 
   const handlePracticeCharFromProfile = useCallback(
     (ch: string) => {
       handleUnlockUpToChar(ch);
-      setSettings((prev) => ({ ...prev, practiceMode: 'guided' }));
+      handleUpdateSettings({ practiceMode: 'guided' });
       handleSelectTab('practice');
     },
-    [handleUnlockUpToChar, handleSelectTab]
+    [handleUnlockUpToChar, handleUpdateSettings, handleSelectTab]
   );
+
+  const handleSignOut = useCallback(async () => {
+    await signOut(auth);
+    setActiveTab('practice');
+  }, []);
+
+  if (!authReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400 text-sm">
+        Loading DPSbr...
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginGate />;
+  }
+
+  if (!profileReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400 text-sm">
+        Loading your Bangla typing records...
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors">
@@ -144,13 +298,32 @@ export default function App() {
           <ProfileView
             profile={profile}
             settings={settings}
-            onUpdateDisplayName={(displayName) =>
-              setProfile((prev) => ({ ...prev, displayName }))
-            }
-            onImportProfile={(imported) => setProfile(imported)}
-            onResetProfile={() => setProfile(createInitialProfile())}
+            onUpdateDisplayName={(displayName) => {
+              setProfile((prev) => ({ ...prev, displayName }));
+              void updateDisplayNameInFirestore(user.uid, displayName).catch((err) =>
+                setSyncError(err instanceof Error ? err : new Error(String(err)))
+              );
+            }}
+            onImportProfile={(imported) => {
+              setProfile((prev) => ({ ...prev, ...imported, email: user.email || '' }));
+              void importProfileToFirestore(user.uid, imported).catch((err) =>
+                setSyncError(err instanceof Error ? err : new Error(String(err)))
+              );
+            }}
+            onResetProfile={() => {
+              setProfile(
+                createInitialProfile(
+                  user.email || '',
+                  user.displayName || profile.displayName
+                )
+              );
+              void resetProfileInFirestore(user.uid).catch((err) =>
+                setSyncError(err instanceof Error ? err : new Error(String(err)))
+              );
+            }}
             onPracticeChar={handlePracticeCharFromProfile}
             onGoToPractice={() => handleSelectTab('practice')}
+            onSignOut={handleSignOut}
           />
         )}
 
@@ -169,10 +342,14 @@ export default function App() {
 
       <footer className="border-t border-slate-200 dark:border-slate-800 py-5 mt-8">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="font-semibold text-slate-700 dark:text-slate-300">DPSbr</span>
             <span aria-hidden="true">·</span>
-            <span>Bangla Adaptive Typing Trainer</span>
+            <span>Signed in as {user.email}</span>
+            <span aria-hidden="true">·</span>
+            <span className="font-mono-tabular">
+              {Math.max(profile.totalLessons, profile.lessons.length)} lessons saved
+            </span>
           </div>
           <div className="flex items-center gap-4">
             <button
@@ -214,5 +391,13 @@ export default function App() {
         onUpdateSettings={handleUpdateSettings}
       />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <DPSbrApp />
+    </ErrorBoundary>
   );
 }
