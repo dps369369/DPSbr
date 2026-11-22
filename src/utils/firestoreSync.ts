@@ -5,12 +5,12 @@ import {
   getDocs,
   limit,
   onSnapshot,
-  orderBy,
   query,
   serverTimestamp,
   setDoc,
   Timestamp,
   updateDoc,
+  where,
   writeBatch,
 } from 'firebase/firestore';
 import { STARTER_BANGLA_CHARS } from '../data/banglaCorpus';
@@ -169,8 +169,8 @@ export function subscribeToUserLessons(
   const lessonsPath = `users/${uid}/lessons`;
   const q = query(
     collection(db, 'users', uid, 'lessons'),
-    orderBy('timestamp', 'desc'),
-    limit(200)
+    where('ownerId', '==', uid),
+    limit(500)
   );
 
   return onSnapshot(
@@ -200,7 +200,8 @@ export function subscribeToUserLessons(
               : null,
         };
       });
-      onUpdate(items);
+      items.sort((a, b) => b.timestamp - a.timestamp);
+      onUpdate(items.slice(0, 200));
     },
     (error) => {
       try {
@@ -376,7 +377,9 @@ export async function importProfileToFirestore(
 export async function resetProfileInFirestore(uid: string): Promise<void> {
   const lessonsPath = `users/${uid}/lessons`;
   try {
-    const snap = await getDocs(collection(db, 'users', uid, 'lessons'));
+    const snap = await getDocs(
+      query(collection(db, 'users', uid, 'lessons'), where('ownerId', '==', uid))
+    );
     const batch = writeBatch(db);
     snap.docs.forEach((d) => {
       batch.delete(d.ref);

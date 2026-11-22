@@ -217,8 +217,8 @@ export function PracticeView({
       const start = startedAt ?? endTimestamp - 1000;
       const durationMs = Math.max(800, endTimestamp - start);
       const minutes = durationMs / 60000;
-      const wpm = Math.round(finalHits / 5 / minutes);
-      const cpm = Math.round(finalHits / minutes);
+      const wpm = Math.min(400, Math.max(0, Math.round(finalHits / 5 / minutes)));
+      const cpm = Math.min(2000, Math.max(0, Math.round(finalHits / minutes)));
       const totalAttempts = finalHits + finalMisses;
       const accuracy =
         totalAttempts > 0 ? Math.round((finalHits / totalAttempts) * 1000) / 10 : 100;
