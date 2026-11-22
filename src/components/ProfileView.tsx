@@ -7,7 +7,7 @@ import {
   RotateCcw,
   Upload,
 } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { BANGLA_LESSON_CHARS } from '../data/banglaCorpus';
 import {
   BANGLA_LAYOUTS,
@@ -28,26 +28,36 @@ import { HeatmapMetric, KeyboardVisual } from './KeyboardVisual';
 interface ProfileViewProps {
   profile: ProfileData;
   settings: UserSettings;
+  initialSection?: 'main' | 'freehand';
   onUpdateDisplayName: (name: string) => void;
   onImportProfile: (data: ProfileData) => void;
   onResetProfile: () => void;
+  onResetFreeHandStats: () => void;
   onPracticeChar: (ch: string) => void;
+  onPracticeFreeHandChar: (ch: string) => void;
   onGoToPractice: () => void;
+  onGoToFreeHand: () => void;
   onSignOut: () => void;
 }
 
 type CharSortMode = 'order' | 'slowest' | 'fastest' | 'errors';
+type StatsSection = 'main' | 'freehand';
 
 export function ProfileView({
   profile,
   settings,
+  initialSection = 'main',
   onUpdateDisplayName,
   onImportProfile,
   onResetProfile,
+  onResetFreeHandStats,
   onPracticeChar,
+  onPracticeFreeHandChar,
   onGoToPractice,
+  onGoToFreeHand,
   onSignOut,
 }: ProfileViewProps) {
+  const [statsSection, setStatsSection] = useState<StatsSection>(initialSection);
   const [isEditingName, setIsEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(profile.displayName);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -63,20 +73,59 @@ export function ProfileView({
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Aggregate summary metrics (uses cumulative Firestore counters so counts never get truncated)
+  useEffect(() => {
+    setStatsSection(initialSection);
+    setConfirmReset(false);
+    setHoveredLessonIdx(null);
+  }, [initialSection]);
+
+  const isFreeHand = statsSection === 'freehand';
+
+  const mainLessons = useMemo(
+    () => profile.lessons.filter((l) => l.mode !== 'freehand'),
+    [profile.lessons]
+  );
+
+  const freeHandLessons = useMemo(
+    () => profile.lessons.filter((l) => l.mode === 'freehand'),
+    [profile.lessons]
+  );
+
+  const activeLessons = isFreeHand ? freeHandLessons : mainLessons;
+  const activeKeyStats = isFreeHand
+    ? profile.freeHandStats?.keyStats || {}
+    : profile.keyStats;
+  const activeDailyStats = isFreeHand
+    ? profile.freeHandStats?.dailyStats || {}
+    : profile.dailyStats;
+
+  // Aggregate summary metrics strictly scoped to either Main DPSbr or Free Hand
   const summary = useMemo(() => {
-    const lessons = profile.lessons;
-    const totalLessons = Math.max(profile.totalLessons || 0, lessons.length);
+    const lessons = activeLessons;
+    const storedTotalLessons = isFreeHand
+      ? profile.freeHandStats?.totalLessons || 0
+      : profile.totalLessons || 0;
+    const storedDurationMs = isFreeHand
+      ? profile.freeHandStats?.totalDurationMs || 0
+      : profile.totalDurationMs || 0;
+    const storedCharsTyped = isFreeHand
+      ? profile.freeHandStats?.totalCharsTyped || 0
+      : profile.totalCharsTyped || 0;
+    const storedTopWpm = isFreeHand
+      ? profile.freeHandStats?.topWpm || 0
+      : profile.topWpm || 0;
+
+    const totalLessons = Math.max(storedTotalLessons, lessons.length);
     const totalDurationMs = Math.max(
-      profile.totalDurationMs || 0,
+      storedDurationMs,
       lessons.reduce((acc, l) => acc + l.durationMs, 0)
     );
     const totalCharsTyped = Math.max(
-      profile.totalCharsTyped || 0,
+      storedCharsTyped,
       lessons.reduce((acc, l) => acc + l.charCount, 0)
     );
     const topSpeed = Math.max(
-      profile.topWpm || 0,
+      storedTopWpm,
       lessons.reduce((max, l) => Math.max(max, l.wpm), 0)
     );
     const avgSpeed =
@@ -92,7 +141,7 @@ export function ProfileView({
           ) / 10
         : 100;
 
-    const today = profile.dailyStats[getTodayDateKey()];
+    const today = activeDailyStats[getTodayDateKey()];
     const todayMinutes = today ? Math.round((today.durationMs / 60000) * 10) / 10 : 0;
 
     return {
@@ -105,8 +154,10 @@ export function ProfileView({
       todayMinutes,
     };
   }, [
-    profile.lessons,
-    profile.dailyStats,
+    activeLessons,
+    activeDailyStats,
+    isFreeHand,
+    profile.freeHandStats,
     profile.totalLessons,
     profile.totalDurationMs,
     profile.totalCharsTyped,
@@ -115,8 +166,8 @@ export function ProfileView({
 
   // Chronological lessons for chart (max last 45)
   const chartLessons = useMemo(() => {
-    return [...profile.lessons].slice(0, 45).reverse();
-  }, [profile.lessons]);
+    return [...activeLessons].slice(0, 45).reverse();
+  }, [activeLessons]);
 
   // Moving average WPM for trendline
   const movingAvg = useMemo(() => {
@@ -127,26 +178,37 @@ export function ProfileView({
     });
   }, [chartLessons]);
 
-  // Per-character metrics list
+  const practicedFreeHandCharsCount = useMemo(() => {
+    return Object.values(profile.freeHandStats?.keyStats || {}).filter(
+      (s) => s.hits > 0 || s.misses > 0
+    ).length;
+  }, [profile.freeHandStats]);
+
+  // Per-character metrics list (strictly scoped to active section)
   const charRows = useMemo(() => {
-    const rows = BANGLA_LESSON_CHARS.slice(0, 38)
-      .filter(
-        (ch) =>
-          profile.unlockedChars.includes(ch) ||
-          (profile.keyStats[ch] && profile.keyStats[ch].hits > 0)
-      )
-      .map((ch, orderIdx) => {
-        const stats = profile.keyStats[ch];
-        return {
-          char: ch,
-          orderIdx,
-          wpm: getCharAverageWpm(stats),
-          errRate: getCharErrorRate(stats),
-          hits: stats?.hits ?? 0,
-          misses: stats?.misses ?? 0,
-          confidence: getCharConfidence(stats, settings.targetWpm),
-        };
-      });
+    const candidateChars = isFreeHand
+      ? BANGLA_LESSON_CHARS.filter((ch) => {
+          const st = activeKeyStats[ch];
+          return Boolean(st && (st.hits > 0 || st.misses > 0));
+        })
+      : BANGLA_LESSON_CHARS.slice(0, 38).filter(
+          (ch) =>
+            profile.unlockedChars.includes(ch) ||
+            (activeKeyStats[ch] && activeKeyStats[ch].hits > 0)
+        );
+
+    const rows = candidateChars.map((ch, orderIdx) => {
+      const stats = activeKeyStats[ch];
+      return {
+        char: ch,
+        orderIdx,
+        wpm: getCharAverageWpm(stats),
+        errRate: getCharErrorRate(stats),
+        hits: stats?.hits ?? 0,
+        misses: stats?.misses ?? 0,
+        confidence: getCharConfidence(stats, settings.targetWpm),
+      };
+    });
 
     if (charSort === 'slowest') {
       return [...rows].sort((a, b) => a.wpm - b.wpm);
@@ -158,7 +220,7 @@ export function ProfileView({
       return [...rows].sort((a, b) => b.errRate - a.errRate);
     }
     return rows;
-  }, [profile.unlockedChars, profile.keyStats, settings.targetWpm, charSort]);
+  }, [isFreeHand, activeKeyStats, profile.unlockedChars, settings.targetWpm, charSort]);
 
   // 12-week (84 days) calendar grid
   const calendarDays = useMemo(() => {
@@ -175,7 +237,7 @@ export function ProfileView({
       const d = new Date(today);
       d.setDate(today.getDate() - i);
       const key = getTodayDateKey(d.getTime());
-      const stat = profile.dailyStats[key];
+      const stat = activeDailyStats[key];
       const mins = stat ? Math.round((stat.durationMs / 60000) * 10) / 10 : 0;
       const lessons = stat?.lessons ?? 0;
       let level: 0 | 1 | 2 | 3 | 4 = 0;
@@ -187,7 +249,7 @@ export function ProfileView({
       days.push({ date: key, minutes: mins, lessons, level });
     }
     return days;
-  }, [profile.dailyStats, settings.dailyGoalMinutes]);
+  }, [activeDailyStats, settings.dailyGoalMinutes]);
 
   const handleExportJson = () => {
     const blob = new Blob([JSON.stringify(profile, null, 2)], {
@@ -256,7 +318,7 @@ export function ProfileView({
     .join(' ');
 
   return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-8">
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-6">
       {/* Profile Header */}
       <section className="flex flex-wrap items-start justify-between gap-4 pb-6 border-b border-slate-200 dark:border-slate-800">
         <div className="space-y-1.5">
@@ -319,7 +381,8 @@ export function ProfileView({
             </span>
             <span aria-hidden="true">·</span>
             <span className="font-mono-tabular">
-              Today: {summary.todayMinutes} / {settings.dailyGoalMinutes} min
+              {isFreeHand ? 'Free Hand Today' : 'Today'}: {summary.todayMinutes} /{' '}
+              {settings.dailyGoalMinutes} min
             </span>
           </div>
         </div>
@@ -351,12 +414,16 @@ export function ProfileView({
           {confirmReset ? (
             <div className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-xs">
               <span className="text-rose-800 dark:text-rose-200 font-medium">
-                Reset all stats?
+                {isFreeHand ? 'Reset Free Hand stats?' : 'Reset DPSbr stats?'}
               </span>
               <button
                 type="button"
                 onClick={() => {
-                  onResetProfile();
+                  if (isFreeHand) {
+                    onResetFreeHandStats();
+                  } else {
+                    onResetProfile();
+                  }
                   setConfirmReset(false);
                 }}
                 className="px-2 py-0.5 rounded bg-rose-600 text-white font-medium hover:bg-rose-700"
@@ -378,7 +445,7 @@ export function ProfileView({
               className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>Reset</span>
+              <span>{isFreeHand ? 'Reset Free Hand' : 'Reset'}</span>
             </button>
           )}
           <button
@@ -390,6 +457,48 @@ export function ProfileView({
             <span>Sign Out</span>
           </button>
         </div>
+      </section>
+
+      {/* Isolated Statistics Switcher: Main DPSbr vs Free Hand */}
+      <section className="flex flex-wrap items-center justify-between gap-3">
+        <div className="inline-flex items-center p-1 rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+          <button
+            type="button"
+            onClick={() => {
+              setStatsSection('main');
+              setConfirmReset(false);
+              setHoveredLessonIdx(null);
+            }}
+            className={`px-3.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+              statsSection === 'main'
+                ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+            }`}
+          >
+            DPSbr Statistics
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setStatsSection('freehand');
+              setConfirmReset(false);
+              setHoveredLessonIdx(null);
+            }}
+            className={`px-3.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+              statsSection === 'freehand'
+                ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+            }`}
+          >
+            Free Hand Statistics
+          </button>
+        </div>
+
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          {isFreeHand
+            ? 'Free Hand drills are tracked separately and never affect your main DPSbr curriculum or rankings.'
+            : 'Guided, All Words, Conjuncts, and Custom Text progress are tracked here separately from Free Hand.'}
+        </p>
       </section>
 
       {importError && (
@@ -406,15 +515,26 @@ export function ProfileView({
       {/* KPI Summary Grid */}
       <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {[
-          { label: 'Total Time', value: formatDuration(summary.totalDurationMs) },
-          { label: 'Lessons', value: String(summary.totalLessons) },
+          {
+            label: isFreeHand ? 'Free Hand Time' : 'Total Time',
+            value: formatDuration(summary.totalDurationMs),
+          },
+          {
+            label: isFreeHand ? 'Drills Completed' : 'Lessons',
+            value: String(summary.totalLessons),
+          },
           { label: 'Top Speed', value: `${summary.topSpeed} WPM` },
           { label: 'Average Speed', value: `${summary.avgSpeed} WPM` },
           { label: 'Avg Accuracy', value: `${summary.avgAccuracy}%` },
-          {
-            label: 'Keys Unlocked',
-            value: `${profile.unlockedChars.length}/${BANGLA_LESSON_CHARS.length}`,
-          },
+          isFreeHand
+            ? {
+                label: 'Keys Practiced',
+                value: `${practicedFreeHandCharsCount}/${BANGLA_LESSON_CHARS.length}`,
+              }
+            : {
+                label: 'Keys Unlocked',
+                value: `${profile.unlockedChars.length}/${BANGLA_LESSON_CHARS.length}`,
+              },
         ].map((kpi) => (
           <div
             key={kpi.label}
@@ -433,15 +553,18 @@ export function ProfileView({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-              Typing Speed &amp; Trend History
+              {isFreeHand ? 'Free Hand Speed & Trend History' : 'Typing Speed & Trend History'}
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Lesson-by-lesson speed (WPM) with 5-lesson moving average and target pace line.
+              {isFreeHand
+                ? 'Drill-by-drill speed (WPM) with 5-drill moving average for Free Hand practice.'
+                : 'Lesson-by-lesson speed (WPM) with 5-lesson moving average and target pace line.'}
             </p>
           </div>
           <div className="flex items-center gap-4 text-xs text-slate-600 dark:text-slate-300">
             <span className="inline-flex items-center gap-1.5">
-              <span className="w-3 h-0.5 bg-sky-500 inline-block" /> Lesson WPM
+              <span className="w-3 h-0.5 bg-sky-500 inline-block" />{' '}
+              {isFreeHand ? 'Drill WPM' : 'Lesson WPM'}
             </span>
             <span className="inline-flex items-center gap-1.5">
               <span className="w-3 h-0.5 bg-emerald-500 inline-block" /> Moving Avg
@@ -455,15 +578,17 @@ export function ProfileView({
         {chartLessons.length === 0 ? (
           <div className="py-12 text-center space-y-3 border border-dashed border-slate-200 dark:border-slate-800 rounded-lg">
             <p className="text-sm text-slate-600 dark:text-slate-300">
-              No completed lessons recorded yet. Complete your first Bangla practice round to unlock speed analytics.
+              {isFreeHand
+                ? 'No Free Hand drills recorded yet. Complete a Free Hand combination round to view isolated Free Hand analytics.'
+                : 'No completed lessons recorded yet. Complete your first Bangla practice round to unlock speed analytics.'}
             </p>
             <button
               type="button"
-              onClick={onGoToPractice}
+              onClick={isFreeHand ? onGoToFreeHand : onGoToPractice}
               className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition-colors"
             >
               <Play className="w-3.5 h-3.5" />
-              <span>Start Practicing</span>
+              <span>{isFreeHand ? 'Start Free Hand Drill' : 'Start Practicing'}</span>
             </button>
           </div>
         ) : (
@@ -472,7 +597,11 @@ export function ProfileView({
               viewBox={`0 0 ${chartW} ${chartH}`}
               className="w-full min-w-[540px] h-56 overflow-visible"
               role="img"
-              aria-label="Typing speed history line chart"
+              aria-label={
+                isFreeHand
+                  ? 'Free Hand typing speed history line chart'
+                  : 'Typing speed history line chart'
+              }
             >
               {/* Horizontal grid lines */}
               {[0, 0.25, 0.5, 0.75, 1].map((t) => {
@@ -563,7 +692,7 @@ export function ProfileView({
             {hoveredLessonIdx !== null && chartLessons[hoveredLessonIdx] && (
               <div className="mt-2 px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs flex flex-wrap items-center justify-between gap-2 text-slate-700 dark:text-slate-200">
                 <span>
-                  Lesson #{hoveredLessonIdx + 1} ·{' '}
+                  {isFreeHand ? 'Drill' : 'Lesson'} #{hoveredLessonIdx + 1} ·{' '}
                   {new Date(chartLessons[hoveredLessonIdx].timestamp).toLocaleString()}
                 </span>
                 <div className="flex items-center gap-3 font-mono-tabular">
@@ -589,17 +718,25 @@ export function ProfileView({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-              Bangla Character Speed &amp; Mastery
+              {isFreeHand
+                ? 'Free Hand Character Speed & Recognition'
+                : 'Bangla Character Speed & Mastery'}
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Click any character bar to drill it in Guided Practice. Target threshold is{' '}
-              <span className="font-mono-tabular font-medium">{settings.targetWpm} WPM</span>.
+              {isFreeHand
+                ? 'Speed and accuracy recorded solely inside Free Hand combination drills. Click any key to practice it in Free Hand.'
+                : 'Click any character bar to drill it in Guided Practice. Target threshold is '}
+              {!isFreeHand && (
+                <>
+                  <span className="font-mono-tabular font-medium">{settings.targetWpm} WPM</span>.
+                </>
+              )}
             </p>
           </div>
           <div className="inline-flex items-center p-1 rounded-lg bg-slate-100 dark:bg-slate-800">
             {(
               [
-                { id: 'order', label: 'Curriculum' },
+                { id: 'order', label: isFreeHand ? 'Letter Order' : 'Curriculum' },
                 { id: 'slowest', label: 'Slowest' },
                 { id: 'fastest', label: 'Fastest' },
                 { id: 'errors', label: 'Most Errors' },
@@ -621,45 +758,56 @@ export function ProfileView({
           </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2.5">
-          {charRows.map((row) => {
-            const pct = Math.min(100, Math.round((row.wpm / Math.max(20, settings.targetWpm * 1.3)) * 100));
-            const mastered = row.confidence >= 0.82;
-            return (
-              <button
-                key={row.char}
-                type="button"
-                onClick={() => onPracticeChar(row.char)}
-                className="text-left p-2.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:border-sky-400 dark:hover:border-sky-500 bg-slate-50/50 dark:bg-slate-800/40 transition-colors"
-              >
-                <div className="flex items-baseline justify-between">
-                  <span className="font-bangla text-lg font-bold text-slate-900 dark:text-slate-100">
-                    {row.char}
-                  </span>
-                  <span className="font-mono-tabular text-xs font-semibold text-slate-700 dark:text-slate-200">
-                    {row.wpm > 0 ? `${row.wpm}` : '—'}
-                  </span>
-                </div>
-                <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full ${
-                      mastered
-                        ? 'bg-emerald-500'
-                        : row.wpm > 0
-                        ? 'bg-sky-500'
-                        : 'bg-slate-300 dark:bg-slate-600'
-                    }`}
-                    style={{ width: `${Math.max(row.wpm > 0 ? 12 : 0, pct)}%` }}
-                  />
-                </div>
-                <div className="mt-1 flex items-center justify-between text-[10px] font-mono-tabular text-slate-500 dark:text-slate-400">
-                  <span>{row.hits} hits</span>
-                  <span>{row.errRate.toFixed(0)}% err</span>
-                </div>
-              </button>
-            );
-          })}
-        </div>
+        {charRows.length === 0 ? (
+          <div className="py-8 text-center text-xs text-slate-500 dark:text-slate-400 border border-dashed border-slate-200 dark:border-slate-800 rounded-lg">
+            No Free Hand character keystrokes recorded yet. Type a Free Hand combination drill to build character speed stats here.
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2.5">
+            {charRows.map((row) => {
+              const pct = Math.min(
+                100,
+                Math.round((row.wpm / Math.max(20, settings.targetWpm * 1.3)) * 100)
+              );
+              const mastered = row.confidence >= 0.82;
+              return (
+                <button
+                  key={row.char}
+                  type="button"
+                  onClick={() =>
+                    isFreeHand ? onPracticeFreeHandChar(row.char) : onPracticeChar(row.char)
+                  }
+                  className="text-left p-2.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:border-sky-400 dark:hover:border-sky-500 bg-slate-50/50 dark:bg-slate-800/40 transition-colors"
+                >
+                  <div className="flex items-baseline justify-between">
+                    <span className="font-bangla text-lg font-bold text-slate-900 dark:text-slate-100">
+                      {row.char}
+                    </span>
+                    <span className="font-mono-tabular text-xs font-semibold text-slate-700 dark:text-slate-200">
+                      {row.wpm > 0 ? `${row.wpm}` : '—'}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${
+                        mastered
+                          ? 'bg-emerald-500'
+                          : row.wpm > 0
+                          ? 'bg-sky-500'
+                          : 'bg-slate-300 dark:bg-slate-600'
+                      }`}
+                      style={{ width: `${Math.max(row.wpm > 0 ? 12 : 0, pct)}%` }}
+                    />
+                  </div>
+                  <div className="mt-1 flex items-center justify-between text-[10px] font-mono-tabular text-slate-500 dark:text-slate-400">
+                    <span>{row.hits} hits</span>
+                    <span>{row.errRate.toFixed(0)}% err</span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       {/* Interactive Keyboard Heatmap */}
@@ -667,10 +815,11 @@ export function ProfileView({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-              Keyboard Performance Heatmap
+              {isFreeHand ? 'Free Hand Keyboard Heatmap' : 'Keyboard Performance Heatmap'}
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Click any physical key to inspect speed and accuracy for its Bangla characters.
+              Click any physical key to inspect{' '}
+              {isFreeHand ? 'Free Hand' : 'main practice'} speed and accuracy for its Bangla characters.
             </p>
           </div>
           <div className="inline-flex items-center p-1 rounded-lg bg-slate-100 dark:bg-slate-800">
@@ -700,7 +849,7 @@ export function ProfileView({
         <KeyboardVisual
           layoutId={settings.layout}
           mode="heatmap"
-          keyStats={profile.keyStats}
+          keyStats={activeKeyStats}
           targetWpm={settings.targetWpm}
           heatmapMetric={heatmapMetric}
           selectedKeyCode={selectedKeyDef.code}
@@ -729,7 +878,7 @@ export function ProfileView({
               { label: 'Unshifted', ch: selectedMapping.normal },
               { label: 'Shift + Key', ch: selectedMapping.shift },
             ].map((slot) => {
-              const st = profile.keyStats[slot.ch];
+              const st = activeKeyStats[slot.ch];
               const wpm = getCharAverageWpm(st);
               const err = getCharErrorRate(st);
               return (
@@ -754,7 +903,9 @@ export function ProfileView({
                   {BANGLA_LESSON_CHARS.includes(slot.ch) && (
                     <button
                       type="button"
-                      onClick={() => onPracticeChar(slot.ch)}
+                      onClick={() =>
+                        isFreeHand ? onPracticeFreeHandChar(slot.ch) : onPracticeChar(slot.ch)
+                      }
                       className="px-2.5 py-1.5 text-xs font-medium rounded-md bg-sky-600 hover:bg-sky-700 text-white transition-colors shrink-0"
                     >
                       Practice
@@ -773,10 +924,12 @@ export function ProfileView({
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                12-Week Practice Calendar
+                {isFreeHand ? '12-Week Free Hand Calendar' : '12-Week Practice Calendar'}
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Daily minutes practiced toward your {settings.dailyGoalMinutes}m goal.
+                {isFreeHand
+                  ? 'Daily Free Hand minutes practiced separately from main goals.'
+                  : `Daily minutes practiced toward your ${settings.dailyGoalMinutes}m goal.`}
               </p>
             </div>
           </div>
@@ -796,7 +949,9 @@ export function ProfileView({
               return (
                 <div
                   key={day.date}
-                  title={`${day.date}: ${day.minutes} min (${day.lessons} lessons)`}
+                  title={`${day.date}: ${day.minutes} min (${day.lessons} ${
+                    isFreeHand ? 'drills' : 'lessons'
+                  })`}
                   className={`aspect-square rounded-sm ${colorClass}`}
                 />
               );
@@ -816,16 +971,18 @@ export function ProfileView({
         <section className="lg:col-span-7 p-5 sm:p-6 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-              Recent Practice Sessions
+              {isFreeHand ? 'Recent Free Hand Drills' : 'Recent Practice Sessions'}
             </h2>
             <span className="text-xs font-mono-tabular text-slate-500 dark:text-slate-400">
-              Showing latest {Math.min(10, profile.lessons.length)}
+              Showing latest {Math.min(10, activeLessons.length)}
             </span>
           </div>
 
-          {profile.lessons.length === 0 ? (
+          {activeLessons.length === 0 ? (
             <div className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">
-              Your completed lessons will appear here with speed, accuracy, and duration.
+              {isFreeHand
+                ? 'Your completed Free Hand drills will appear here separately from main lessons.'
+                : 'Your completed lessons will appear here with speed, accuracy, and duration.'}
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -841,7 +998,7 @@ export function ProfileView({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/70">
-                  {profile.lessons.slice(0, 10).map((l) => (
+                  {activeLessons.slice(0, 10).map((l) => (
                     <tr key={l.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                       <td className="py-2.5 text-slate-600 dark:text-slate-300 font-mono-tabular">
                         {new Date(l.timestamp).toLocaleTimeString([], {
@@ -875,3 +1032,4 @@ export function ProfileView({
     </div>
   );
 }
+

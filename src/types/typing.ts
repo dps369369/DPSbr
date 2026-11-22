@@ -1,6 +1,6 @@
 export type LayoutId = 'probhat' | 'unijoy' | 'jatiya' | 'ime';
 
-export type PracticeMode = 'guided' | 'all' | 'conjuncts' | 'custom';
+export type PracticeMode = 'guided' | 'freehand' | 'all' | 'conjuncts' | 'custom';
 
 export type NavTab = 'practice' | 'profile' | 'layouts' | 'guide';
 
@@ -100,6 +100,16 @@ export interface UserSettings {
   includePunctuation: boolean;
   theme: 'light' | 'dark';
   customText: string;
+  freeHandChars: string[];
+}
+
+export interface FreeHandStats {
+  totalLessons: number;
+  totalCharsTyped: number;
+  totalDurationMs: number;
+  topWpm: number;
+  keyStats: Record<string, KeyStats>;
+  dailyStats: Record<string, DailyPracticeStat>;
 }
 
 export interface ProfileData {
@@ -115,6 +125,7 @@ export interface ProfileData {
   keyStats: Record<string, KeyStats>;
   lessons: LessonRecord[];
   dailyStats: Record<string, DailyPracticeStat>;
+  freeHandStats: FreeHandStats;
 }
 
 export interface GraphemeToken {

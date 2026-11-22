@@ -1,21 +1,31 @@
 import { signInWithPopup } from 'firebase/auth';
-import { Keyboard, LineChart, ShieldCheck } from 'lucide-react';
+import { Check, Copy, Keyboard, LineChart, ShieldCheck } from 'lucide-react';
 import { useState } from 'react';
+import firebaseConfig from '../../firebase-applet-config.json';
 import { auth, googleProvider } from '../firebase';
 import { KeyboardVisual } from './KeyboardVisual';
 
 export function LoginGate() {
   const [signingIn, setSigningIn] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [unauthorizedDomain, setUnauthorizedDomain] = useState<string | null>(null);
+  const [copiedDomain, setCopiedDomain] = useState(false);
 
   const handleGoogleLogin = async () => {
     setErrorMsg(null);
+    setUnauthorizedDomain(null);
     setSigningIn(true);
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('popup-closed-by-user')) {
+      if (msg.includes('unauthorized-domain')) {
+        const host = typeof window !== 'undefined' ? window.location.hostname : '';
+        setUnauthorizedDomain(host || 'your-vercel-domain.vercel.app');
+        setErrorMsg(
+          `This domain (${host || 'current domain'}) is not allowlisted in Firebase Authentication yet.`
+        );
+      } else if (msg.includes('popup-closed-by-user')) {
         setErrorMsg('Sign-in popup was closed before completing login. Please try again.');
       } else if (msg.includes('popup-blocked')) {
         setErrorMsg('Your browser blocked the Google sign-in popup. Please allow popups and try again.');
@@ -26,6 +36,19 @@ export function LoginGate() {
       setSigningIn(false);
     }
   };
+
+  const handleCopyDomain = async () => {
+    if (!unauthorizedDomain || typeof navigator === 'undefined' || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(unauthorizedDomain);
+      setCopiedDomain(true);
+      setTimeout(() => setCopiedDomain(false), 2000);
+    } catch {
+      // ignore clipboard errors
+    }
+  };
+
+  const firebaseAuthSettingsUrl = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`;
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
@@ -97,8 +120,44 @@ export function LoginGate() {
               </div>
 
               {errorMsg && (
-                <div className="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-800 dark:text-rose-200">
-                  {errorMsg}
+                <div className="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-800 dark:text-rose-200 space-y-2.5">
+                  <p className="font-medium">{errorMsg}</p>
+                  {unauthorizedDomain && (
+                    <div className="space-y-2 pt-1 border-t border-rose-200/80 dark:border-rose-800/80 text-[11px] leading-relaxed">
+                      <p>
+                        To enable Google sign-in on this deployed URL, add this domain in Firebase Console under{' '}
+                        <strong>Authentication → Settings → Authorized domains</strong>:
+                      </p>
+                      <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800 font-mono-tabular text-slate-900 dark:text-slate-100">
+                        <span className="truncate">{unauthorizedDomain}</span>
+                        <button
+                          type="button"
+                          onClick={handleCopyDomain}
+                          className="inline-flex items-center gap-1 text-[11px] font-sans font-medium text-sky-600 dark:text-sky-400 hover:underline shrink-0"
+                        >
+                          {copiedDomain ? (
+                            <>
+                              <Check className="w-3 h-3" />
+                              <span>Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3 h-3" />
+                              <span>Copy</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                      <a
+                        href={firebaseAuthSettingsUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-block font-semibold text-sky-700 dark:text-sky-300 hover:underline"
+                      >
+                        Open Firebase Authorized Domains →
+                      </a>
+                    </div>
+                  )}
                 </div>
               )}
 

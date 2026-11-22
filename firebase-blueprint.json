@@ -59,6 +59,10 @@
           "type": "object",
           "description": "User layout, target WPM, daily goal, theme, and typing preferences."
         },
+        "freeHandStats": {
+          "type": "object",
+          "description": "Isolated cumulative stats, keyStats, and dailyStats exclusively for Free Hand practice mode."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -106,7 +110,7 @@
         },
         "mode": {
           "type": "string",
-          "enum": ["guided", "all", "conjuncts", "custom"],
+          "enum": ["guided", "all", "conjuncts", "custom", "freehand"],
           "maxLength": 16,
           "description": "Practice mode used for the lesson."
         },

@@ -17,17 +17,28 @@ import { STARTER_BANGLA_CHARS } from '../data/banglaCorpus';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import {
   DailyPracticeStat,
+  FreeHandStats,
   KeyStats,
   LessonRecord,
   ProfileData,
   UserSettings,
 } from '../types/typing';
-import { DEFAULT_SETTINGS } from './adaptiveEngine';
+import { createEmptyFreeHandStats, DEFAULT_SETTINGS } from './adaptiveEngine';
 
 function sanitizeSettings(s: UserSettings): UserSettings {
+  const rawFreeHand = Array.isArray(s.freeHandChars)
+    ? Array.from(
+        new Set(
+          s.freeHandChars
+            .map((c) => String(c).slice(0, 4))
+            .filter((c) => c.length > 0)
+        )
+      ).slice(0, 64)
+    : ['ক', 'ত'];
+
   return {
     layout: ['probhat', 'unijoy', 'jatiya', 'ime'].includes(s.layout) ? s.layout : 'jatiya',
-    practiceMode: ['guided', 'all', 'conjuncts', 'custom'].includes(s.practiceMode)
+    practiceMode: ['guided', 'freehand', 'all', 'conjuncts', 'custom'].includes(s.practiceMode)
       ? s.practiceMode
       : 'guided',
     targetWpm: Math.min(120, Math.max(10, Math.round(s.targetWpm || 30))),
@@ -41,6 +52,7 @@ function sanitizeSettings(s: UserSettings): UserSettings {
     includePunctuation: Boolean(s.includePunctuation),
     theme: s.theme === 'dark' ? 'dark' : 'light',
     customText: String(s.customText || '').slice(0, 7900),
+    freeHandChars: rawFreeHand.length >= 2 ? rawFreeHand : ['ক', 'ত'],
   };
 }
 
@@ -71,6 +83,19 @@ function trimDailyStats(
   return Object.fromEntries(sorted);
 }
 
+function sanitizeFreeHandStats(fh: Partial<FreeHandStats> | undefined): FreeHandStats {
+  const base = createEmptyFreeHandStats();
+  if (!fh) return base;
+  return {
+    totalLessons: Math.max(0, Math.round(fh.totalLessons || 0)),
+    totalCharsTyped: Math.max(0, Math.round(fh.totalCharsTyped || 0)),
+    totalDurationMs: Math.max(0, Number(fh.totalDurationMs || 0)),
+    topWpm: Math.min(400, Math.max(0, Number(fh.topWpm || 0))),
+    keyStats: trimKeyStats(fh.keyStats || {}),
+    dailyStats: trimDailyStats(fh.dailyStats || {}),
+  };
+}
+
 export async function ensureUserDocument(
   uid: string,
   email: string,
@@ -95,6 +120,7 @@ export async function ensureUserDocument(
         manualFocusChar: '',
         keyStats: {},
         dailyStats: {},
+        freeHandStats: createEmptyFreeHandStats(),
         settings: sanitizeSettings(initialSettings),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -142,6 +168,7 @@ export function subscribeToUserProfile(
             : null,
         keyStats: (data.keyStats as Record<string, KeyStats>) || {},
         dailyStats: (data.dailyStats as Record<string, DailyPracticeStat>) || {},
+        freeHandStats: sanitizeFreeHandStats(data.freeHandStats as Partial<FreeHandStats> | undefined),
       };
 
       const settingsSlice = sanitizeSettings({
@@ -239,17 +266,24 @@ export async function saveLessonToFirestore(
     createdAt: serverTimestamp(),
   });
 
-  batch.update(doc(db, 'users', uid), {
-    totalLessons: Math.max(0, Math.round(updatedProfile.totalLessons)),
-    totalCharsTyped: Math.max(0, Math.round(updatedProfile.totalCharsTyped)),
-    totalDurationMs: Math.max(0, Number(updatedProfile.totalDurationMs)),
-    topWpm: Math.min(400, Math.max(0, Number(updatedProfile.topWpm))),
-    unlockedChars: sanitizeUnlockedChars(updatedProfile.unlockedChars),
-    manualFocusChar: (updatedProfile.manualFocusChar || '').slice(0, 4),
-    keyStats: trimKeyStats(updatedProfile.keyStats),
-    dailyStats: trimDailyStats(updatedProfile.dailyStats),
-    updatedAt: serverTimestamp(),
-  });
+  if (lesson.mode === 'freehand') {
+    batch.update(doc(db, 'users', uid), {
+      freeHandStats: sanitizeFreeHandStats(updatedProfile.freeHandStats),
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    batch.update(doc(db, 'users', uid), {
+      totalLessons: Math.max(0, Math.round(updatedProfile.totalLessons)),
+      totalCharsTyped: Math.max(0, Math.round(updatedProfile.totalCharsTyped)),
+      totalDurationMs: Math.max(0, Number(updatedProfile.totalDurationMs)),
+      topWpm: Math.min(400, Math.max(0, Number(updatedProfile.topWpm))),
+      unlockedChars: sanitizeUnlockedChars(updatedProfile.unlockedChars),
+      manualFocusChar: (updatedProfile.manualFocusChar || '').slice(0, 4),
+      keyStats: trimKeyStats(updatedProfile.keyStats),
+      dailyStats: trimDailyStats(updatedProfile.dailyStats),
+      updatedAt: serverTimestamp(),
+    });
+  }
 
   try {
     await batch.commit();
@@ -310,22 +344,23 @@ export async function importProfileToFirestore(
   imported: ProfileData
 ): Promise<void> {
   const userPath = `users/${uid}`;
+  const mainImportedLessons = (imported.lessons || []).filter((l) => l.mode !== 'freehand');
   const totalLessons =
     typeof imported.totalLessons === 'number'
       ? Math.round(imported.totalLessons)
-      : imported.lessons.length;
+      : mainImportedLessons.length;
   const totalCharsTyped =
     typeof imported.totalCharsTyped === 'number'
       ? Math.round(imported.totalCharsTyped)
-      : imported.lessons.reduce((a, l) => a + Math.round(l.charCount || 0), 0);
+      : mainImportedLessons.reduce((a, l) => a + Math.round(l.charCount || 0), 0);
   const totalDurationMs =
     typeof imported.totalDurationMs === 'number'
       ? imported.totalDurationMs
-      : imported.lessons.reduce((a, l) => a + Number(l.durationMs || 0), 0);
+      : mainImportedLessons.reduce((a, l) => a + Number(l.durationMs || 0), 0);
   const topWpm =
     typeof imported.topWpm === 'number'
       ? imported.topWpm
-      : imported.lessons.reduce((m, l) => Math.max(m, Number(l.wpm || 0)), 0);
+      : mainImportedLessons.reduce((m, l) => Math.max(m, Number(l.wpm || 0)), 0);
 
   const batch = writeBatch(db);
   batch.update(doc(db, 'users', uid), {
@@ -338,6 +373,7 @@ export async function importProfileToFirestore(
     manualFocusChar: (imported.manualFocusChar || '').slice(0, 4),
     keyStats: trimKeyStats(imported.keyStats || {}),
     dailyStats: trimDailyStats(imported.dailyStats || {}),
+    freeHandStats: sanitizeFreeHandStats(imported.freeHandStats),
     updatedAt: serverTimestamp(),
   });
 
@@ -350,7 +386,7 @@ export async function importProfileToFirestore(
       layout: ['probhat', 'unijoy', 'jatiya', 'ime'].includes(lesson.layout)
         ? lesson.layout
         : 'jatiya',
-      mode: ['guided', 'all', 'conjuncts', 'custom'].includes(lesson.mode)
+      mode: ['guided', 'freehand', 'all', 'conjuncts', 'custom'].includes(lesson.mode)
         ? lesson.mode
         : 'guided',
       wpm: Math.min(400, Math.max(0, Number(lesson.wpm || 0))),
@@ -374,7 +410,7 @@ export async function importProfileToFirestore(
   }
 }
 
-export async function resetProfileInFirestore(uid: string): Promise<void> {
+export async function resetMainProfileInFirestore(uid: string): Promise<void> {
   const lessonsPath = `users/${uid}/lessons`;
   try {
     const snap = await getDocs(
@@ -382,7 +418,9 @@ export async function resetProfileInFirestore(uid: string): Promise<void> {
     );
     const batch = writeBatch(db);
     snap.docs.forEach((d) => {
-      batch.delete(d.ref);
+      if (d.data().mode !== 'freehand') {
+        batch.delete(d.ref);
+      }
     });
     batch.update(doc(db, 'users', uid), {
       totalLessons: 0,
@@ -393,6 +431,28 @@ export async function resetProfileInFirestore(uid: string): Promise<void> {
       manualFocusChar: '',
       keyStats: {},
       dailyStats: {},
+      updatedAt: serverTimestamp(),
+    });
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, lessonsPath);
+  }
+}
+
+export async function resetFreeHandStatsInFirestore(uid: string): Promise<void> {
+  const lessonsPath = `users/${uid}/lessons`;
+  try {
+    const snap = await getDocs(
+      query(collection(db, 'users', uid, 'lessons'), where('ownerId', '==', uid))
+    );
+    const batch = writeBatch(db);
+    snap.docs.forEach((d) => {
+      if (d.data().mode === 'freehand') {
+        batch.delete(d.ref);
+      }
+    });
+    batch.update(doc(db, 'users', uid), {
+      freeHandStats: createEmptyFreeHandStats(),
       updatedAt: serverTimestamp(),
     });
     await batch.commit();

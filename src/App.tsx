@@ -17,6 +17,7 @@ import { BANGLA_LESSON_CHARS } from './data/banglaCorpus';
 import { auth } from './firebase';
 import { LessonRecord, NavTab, ProfileData, UserSettings } from './types/typing';
 import {
+  createEmptyFreeHandStats,
   createInitialProfile,
   DEFAULT_SETTINGS,
   recordLessonResult,
@@ -24,7 +25,8 @@ import {
 import {
   ensureUserDocument,
   importProfileToFirestore,
-  resetProfileInFirestore,
+  resetFreeHandStatsInFirestore,
+  resetMainProfileInFirestore,
   saveLessonToFirestore,
   subscribeToUserLessons,
   subscribeToUserProfile,
@@ -50,6 +52,7 @@ function DPSbrApp() {
   const [syncError, setSyncError] = useState<Error | null>(null);
 
   const [activeTab, setActiveTab] = useState<NavTab>(getInitialTab);
+  const [profileSection, setProfileSection] = useState<'main' | 'freehand'>('main');
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
   const [profile, setProfile] = useState<ProfileData>(() => createInitialProfile());
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -247,6 +250,31 @@ function DPSbrApp() {
     [handleUnlockUpToChar, handleUpdateSettings, handleSelectTab]
   );
 
+  const handlePracticeFreeHandCharFromProfile = useCallback(
+    (ch: string) => {
+      setSettings((prev) => {
+        const current =
+          prev.freeHandChars && prev.freeHandChars.length >= 2
+            ? prev.freeHandChars
+            : ['ক', 'ত'];
+        const nextChars = current.includes(ch) ? current : [ch, ...current.slice(0, 7)];
+        const next: UserSettings = {
+          ...prev,
+          practiceMode: 'freehand',
+          freeHandChars: nextChars,
+        };
+        if (user) {
+          void updateSettingsInFirestore(user.uid, next).catch((err) =>
+            setSyncError(err instanceof Error ? err : new Error(String(err)))
+          );
+        }
+        return next;
+      });
+      handleSelectTab('practice');
+    },
+    [user, handleSelectTab]
+  );
+
   const handleSignOut = useCallback(async () => {
     await signOut(auth);
     setActiveTab('practice');
@@ -289,7 +317,10 @@ function DPSbrApp() {
             onCompleteLesson={handleCompleteLesson}
             onSelectFocusChar={handleSelectFocusChar}
             onUnlockUpToChar={handleUnlockUpToChar}
-            onOpenProfile={() => handleSelectTab('profile')}
+            onOpenProfile={(section = 'main') => {
+              setProfileSection(section);
+              handleSelectTab('profile');
+            }}
             onOpenSettings={() => setSettingsOpen(true)}
           />
         )}
@@ -298,6 +329,7 @@ function DPSbrApp() {
           <ProfileView
             profile={profile}
             settings={settings}
+            initialSection={profileSection}
             onUpdateDisplayName={(displayName) => {
               setProfile((prev) => ({ ...prev, displayName }));
               void updateDisplayNameInFirestore(user.uid, displayName).catch((err) =>
@@ -311,18 +343,36 @@ function DPSbrApp() {
               );
             }}
             onResetProfile={() => {
-              setProfile(
-                createInitialProfile(
-                  user.email || '',
-                  user.displayName || profile.displayName
-                )
+              const emptyMain = createInitialProfile(
+                user.email || '',
+                user.displayName || profile.displayName
               );
-              void resetProfileInFirestore(user.uid).catch((err) =>
+              setProfile((prev) => ({
+                ...emptyMain,
+                lessons: prev.lessons.filter((l) => l.mode === 'freehand'),
+                freeHandStats: prev.freeHandStats || createEmptyFreeHandStats(),
+              }));
+              void resetMainProfileInFirestore(user.uid).catch((err) =>
+                setSyncError(err instanceof Error ? err : new Error(String(err)))
+              );
+            }}
+            onResetFreeHandStats={() => {
+              setProfile((prev) => ({
+                ...prev,
+                lessons: prev.lessons.filter((l) => l.mode !== 'freehand'),
+                freeHandStats: createEmptyFreeHandStats(),
+              }));
+              void resetFreeHandStatsInFirestore(user.uid).catch((err) =>
                 setSyncError(err instanceof Error ? err : new Error(String(err)))
               );
             }}
             onPracticeChar={handlePracticeCharFromProfile}
+            onPracticeFreeHandChar={handlePracticeFreeHandCharFromProfile}
             onGoToPractice={() => handleSelectTab('practice')}
+            onGoToFreeHand={() => {
+              handleUpdateSettings({ practiceMode: 'freehand' });
+              handleSelectTab('practice');
+            }}
             onSignOut={handleSignOut}
           />
         )}
@@ -348,7 +398,16 @@ function DPSbrApp() {
             <span>Signed in as {user.email}</span>
             <span aria-hidden="true">·</span>
             <span className="font-mono-tabular">
-              {Math.max(profile.totalLessons, profile.lessons.length)} lessons saved
+              {Math.max(
+                profile.totalLessons,
+                profile.lessons.filter((l) => l.mode !== 'freehand').length
+              )}{' '}
+              lessons ·{' '}
+              {Math.max(
+                profile.freeHandStats?.totalLessons || 0,
+                profile.lessons.filter((l) => l.mode === 'freehand').length
+              )}{' '}
+              free hand
             </span>
           </div>
           <div className="flex items-center gap-4">

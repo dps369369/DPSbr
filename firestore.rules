@@ -61,14 +61,22 @@ service cloud.firestore {
           'stopOnError',
           'includePunctuation',
           'theme',
-          'customText'
+          'customText',
+          'freeHandChars'
         ])
+        && (!('freeHandChars' in s) || (
+          s.freeHandChars is list
+          && s.freeHandChars.size() >= 2
+          && s.freeHandChars.size() <= 64
+          && s.freeHandChars[0] is string
+          && s.freeHandChars[0].size() <= 4
+        ))
         && s.layout is string
         && s.layout.size() <= 16
         && s.layout in ['probhat', 'unijoy', 'jatiya', 'ime']
         && s.practiceMode is string
         && s.practiceMode.size() <= 16
-        && s.practiceMode in ['guided', 'all', 'conjuncts', 'custom']
+        && s.practiceMode in ['guided', 'all', 'conjuncts', 'custom', 'freehand']
         && s.targetWpm is number
         && s.targetWpm >= 10
         && s.targetWpm <= 120
@@ -89,6 +97,39 @@ service cloud.firestore {
         && s.theme in ['light', 'dark']
         && s.customText is string
         && s.customText.size() <= 8000;
+    }
+
+    function isValidFreeHandStats(fh) {
+      return fh is map
+        && fh.keys().hasAll([
+          'totalLessons',
+          'totalCharsTyped',
+          'totalDurationMs',
+          'topWpm',
+          'keyStats',
+          'dailyStats'
+        ])
+        && fh.keys().hasOnly([
+          'totalLessons',
+          'totalCharsTyped',
+          'totalDurationMs',
+          'topWpm',
+          'keyStats',
+          'dailyStats'
+        ])
+        && fh.totalLessons is int
+        && fh.totalLessons >= 0
+        && fh.totalCharsTyped is int
+        && fh.totalCharsTyped >= 0
+        && fh.totalDurationMs is number
+        && fh.totalDurationMs >= 0
+        && fh.topWpm is number
+        && fh.topWpm >= 0
+        && fh.topWpm <= 400
+        && fh.keyStats is map
+        && fh.keyStats.size() <= 120
+        && fh.dailyStats is map
+        && fh.dailyStats.size() <= 400;
     }
 
     function isValidUserProfile(data) {
@@ -121,9 +162,11 @@ service cloud.firestore {
           'keyStats',
           'dailyStats',
           'settings',
+          'freeHandStats',
           'createdAt',
           'updatedAt'
         ])
+        && (!('freeHandStats' in data) || isValidFreeHandStats(data.freeHandStats))
         && data.ownerId is string
         && data.ownerId.size() <= 128
         && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
@@ -200,7 +243,7 @@ service cloud.firestore {
         && data.layout in ['probhat', 'unijoy', 'jatiya', 'ime']
         && data.mode is string
         && data.mode.size() <= 16
-        && data.mode in ['guided', 'all', 'conjuncts', 'custom']
+        && data.mode in ['guided', 'all', 'conjuncts', 'custom', 'freehand']
         && data.wpm is number
         && data.wpm >= 0
         && data.wpm <= 400
@@ -248,6 +291,7 @@ service cloud.firestore {
           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'updatedAt'])
           || incoming().diff(existing()).affectedKeys().hasOnly(['settings', 'updatedAt'])
           || incoming().diff(existing()).affectedKeys().hasOnly(['unlockedChars', 'manualFocusChar', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['freeHandStats', 'updatedAt'])
           || incoming().diff(existing()).affectedKeys().hasOnly([
             'totalLessons',
             'totalCharsTyped',
@@ -269,6 +313,7 @@ service cloud.firestore {
             'manualFocusChar',
             'keyStats',
             'dailyStats',
+            'freeHandStats',
             'updatedAt'
           ])
         );

@@ -49,7 +49,7 @@ interface PracticeViewProps {
   ) => string | null;
   onSelectFocusChar: (ch: string | null) => void;
   onUnlockUpToChar: (ch: string) => void;
-  onOpenProfile: () => void;
+  onOpenProfile: (section?: 'main' | 'freehand') => void;
   onOpenSettings: () => void;
 }
 
@@ -95,6 +95,7 @@ export function PracticeView({
     accuracy: number;
     errors: number;
     newlyUnlocked: string | null;
+    mode: PracticeMode;
   } | null>(null);
 
   const perCharStatsRef = useRef<
@@ -176,12 +177,15 @@ export function PracticeView({
     [profile, settings]
   );
 
-  // Regenerate lesson when key mode/layout/customText/wordCount changes
+  const [freeHandNotice, setFreeHandNotice] = useState<string | null>(null);
+
+  // Regenerate lesson when key mode/layout/customText/wordCount/freeHandChars changes
+  const freeHandKey = (settings.freeHandChars || ['ক', 'ত']).join(',');
   const prevSettingsKey = useRef(
-    `${settings.practiceMode}-${settings.lessonWordCount}-${settings.includePunctuation}-${settings.customText}-${profile.manualFocusChar}`
+    `${settings.practiceMode}-${settings.lessonWordCount}-${settings.includePunctuation}-${settings.customText}-${profile.manualFocusChar}-${freeHandKey}`
   );
   useEffect(() => {
-    const nextKey = `${settings.practiceMode}-${settings.lessonWordCount}-${settings.includePunctuation}-${settings.customText}-${profile.manualFocusChar}`;
+    const nextKey = `${settings.practiceMode}-${settings.lessonWordCount}-${settings.includePunctuation}-${settings.customText}-${profile.manualFocusChar}-${freeHandKey}`;
     if (nextKey !== prevSettingsKey.current) {
       prevSettingsKey.current = nextKey;
       resetLesson();
@@ -192,6 +196,7 @@ export function PracticeView({
     settings.includePunctuation,
     settings.customText,
     profile.manualFocusChar,
+    freeHandKey,
     resetLesson,
   ]);
 
@@ -250,6 +255,7 @@ export function PracticeView({
         accuracy,
         errors: finalMisses,
         newlyUnlocked: unlocked,
+        mode: settings.practiceMode,
       });
 
       // Immediately generate next lesson ready to type
@@ -492,8 +498,13 @@ export function PracticeView({
   const liveAccuracy =
     totalAttempts > 0 ? Math.round((totalHits / totalAttempts) * 1000) / 10 : 100;
 
-  const todayStats = profile.dailyStats[getTodayDateKey()];
+  const isFreeHandMode = settings.practiceMode === 'freehand';
+  const activeDailyStats = isFreeHandMode
+    ? profile.freeHandStats?.dailyStats || {}
+    : profile.dailyStats;
+  const todayStats = activeDailyStats[getTodayDateKey()];
   const todayMinutes = todayStats ? Math.round((todayStats.durationMs / 60000) * 10) / 10 : 0;
+  const todayDrillCount = todayStats?.lessons ?? 0;
   const goalProgress = Math.min(100, (todayMinutes / settings.dailyGoalMinutes) * 100);
 
   // Active target instruction for Virtual Keyboard & Keystroke Helper Strip
@@ -546,6 +557,7 @@ export function PracticeView({
             {(
               [
                 { id: 'guided', label: 'Guided' },
+                { id: 'freehand', label: 'Free Hand' },
                 { id: 'all', label: 'All Words' },
                 { id: 'conjuncts', label: 'Conjuncts' },
                 { id: 'custom', label: 'Custom Text' },
@@ -729,6 +741,129 @@ export function PracticeView({
         </section>
       )}
 
+      {/* Free Hand Alphabet Picker (Minimum 2 Characters) */}
+      {settings.practiceMode === 'freehand' && (
+        <section
+          aria-label="Free Hand Alphabet Selector"
+          className="p-4 sm:p-5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3.5"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="font-semibold text-slate-900 dark:text-slate-100">
+                  Free Hand Alphabet Drill
+                </span>
+                <span aria-hidden="true" className="text-slate-400">·</span>
+                <span className="text-slate-500 dark:text-slate-400">
+                  Select 2 or more letters ({(settings.freeHandChars || ['ক', 'ত']).length} selected)
+                </span>
+                <span aria-hidden="true" className="text-slate-400">·</span>
+                <button
+                  type="button"
+                  onClick={() => onOpenProfile('freehand')}
+                  className="text-sky-600 dark:text-sky-400 hover:underline font-medium"
+                >
+                  Free Hand Stats →
+                </button>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Practice generates combinations of your chosen letters with physical key hints so your fingers memorize their positions quickly. Stats stay separate from main DPSbr lessons.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              {[
+                { label: 'ক + ত', chars: ['ক', 'ত'] },
+                { label: 'Home Row', chars: ['ব', 'ক', 'ত', 'দ', 'া', 'ি', 'ু'] },
+                { label: 'ক খ গ ঘ', chars: ['ক', 'খ', 'গ', 'ঘ'] },
+                { label: 'চ ছ জ ঝ', chars: ['চ', 'ছ', 'জ', 'ঝ'] },
+              ].map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => {
+                    setFreeHandNotice(null);
+                    onUpdateSettings({ freeHandChars: preset.chars });
+                  }}
+                  className="px-2.5 py-1 text-xs font-medium rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:border-sky-400 transition-colors font-bangla"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {freeHandNotice && (
+            <div className="text-xs font-medium text-amber-700 dark:text-amber-300">
+              {freeHandNotice}
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-1.5">
+            {BANGLA_LESSON_CHARS.map((ch) => {
+              const selectedList =
+                settings.freeHandChars && settings.freeHandChars.length >= 2
+                  ? settings.freeHandChars
+                  : ['ক', 'ত'];
+              const isSelected = selectedList.includes(ch);
+              const keyHint = findKeystrokeForBanglaChar(settings.layout, ch);
+              const firstKey = keyHint?.sequence[0];
+              const shortKey =
+                settings.layout === 'ime'
+                  ? ''
+                  : firstKey
+                  ? `${firstKey.shift ? '⇧' : ''}${firstKey.keyLabel}`
+                  : '';
+
+              return (
+                <button
+                  key={ch}
+                  type="button"
+                  onClick={() => {
+                    if (isSelected) {
+                      if (selectedList.length <= 2) {
+                        setFreeHandNotice(
+                          'Minimum 2 characters are required for Free Hand combinations.'
+                        );
+                        return;
+                      }
+                      setFreeHandNotice(null);
+                      onUpdateSettings({
+                        freeHandChars: selectedList.filter((item) => item !== ch),
+                      });
+                    } else {
+                      setFreeHandNotice(null);
+                      onUpdateSettings({
+                        freeHandChars: [...selectedList, ch],
+                      });
+                    }
+                  }}
+                  title={`${ch} (${getCharNameEnglish(ch)})${keyHint ? ` — ${keyHint.displayHint}` : ''}`}
+                  className={`min-w-[2.45rem] h-11 px-1.5 rounded-lg border flex flex-col items-center justify-center transition-colors ${
+                    isSelected
+                      ? 'bg-sky-600 dark:bg-sky-500 border-sky-700 dark:border-sky-400 text-white shadow-xs'
+                      : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-sky-400 dark:hover:border-sky-500'
+                  }`}
+                >
+                  <span className="font-bangla text-base font-semibold leading-none">
+                    {ch}
+                  </span>
+                  {shortKey && (
+                    <span
+                      className={`mt-1 text-[9px] font-mono-tabular leading-none ${
+                        isSelected ? 'text-sky-100' : 'text-slate-400 dark:text-slate-500'
+                      }`}
+                    >
+                      {shortKey}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {/* Live Keybr-Style Metrics Strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="px-4 py-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
@@ -766,18 +901,35 @@ export function PracticeView({
         </div>
 
         <div className="px-4 py-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>Daily Goal</span>
-            <span className="font-mono-tabular">
-              {todayMinutes}/{settings.dailyGoalMinutes}m
-            </span>
-          </div>
-          <div className="mt-2.5 h-2 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-            <div
-              className="h-full bg-sky-600 dark:bg-sky-400 rounded-full transition-all duration-300"
-              style={{ width: `${goalProgress}%` }}
-            />
-          </div>
+          {isFreeHandMode ? (
+            <>
+              <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                <span>Free Hand Today</span>
+                <span className="font-mono-tabular">
+                  {todayMinutes}m · {todayDrillCount} drills
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline justify-between text-xs font-mono-tabular text-slate-700 dark:text-slate-200">
+                <span>{profile.freeHandStats?.totalLessons ?? 0} total drills</span>
+                <span>{profile.freeHandStats?.topWpm ?? 0} top WPM</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                <span>Daily Goal</span>
+                <span className="font-mono-tabular">
+                  {todayMinutes}/{settings.dailyGoalMinutes}m
+                </span>
+              </div>
+              <div className="mt-2.5 h-2 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                <div
+                  className="h-full bg-sky-600 dark:bg-sky-400 rounded-full transition-all duration-300"
+                  style={{ width: `${goalProgress}%` }}
+                />
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -787,7 +939,11 @@ export function PracticeView({
           <div className="flex items-center gap-3">
             <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" />
             <div className="text-sm text-emerald-950 dark:text-emerald-100">
-              <span className="font-semibold">Lesson recorded:</span>{' '}
+              <span className="font-semibold">
+                {completedBanner.mode === 'freehand'
+                  ? 'Free Hand drill recorded:'
+                  : 'Lesson recorded:'}
+              </span>{' '}
               <span className="font-mono-tabular font-semibold">{completedBanner.wpm} WPM</span>
               <span className="mx-1.5 text-emerald-500">·</span>
               <span className="font-mono-tabular">{completedBanner.accuracy}% accuracy</span>
@@ -804,10 +960,14 @@ export function PracticeView({
           </div>
           <button
             type="button"
-            onClick={onOpenProfile}
+            onClick={() =>
+              onOpenProfile(completedBanner.mode === 'freehand' ? 'freehand' : 'main')
+            }
             className="text-xs font-medium text-emerald-800 dark:text-emerald-200 hover:underline"
           >
-            View in Profile →
+            {completedBanner.mode === 'freehand'
+              ? 'View Free Hand Stats →'
+              : 'View in Profile →'}
           </button>
         </div>
       )}

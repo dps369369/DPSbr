@@ -7,6 +7,8 @@ import {
   tokenizeWords,
 } from '../data/banglaCorpus';
 import {
+  DailyPracticeStat,
+  FreeHandStats,
   KeyStats,
   LessonRecord,
   PracticeMode,
@@ -32,7 +34,19 @@ export const DEFAULT_SETTINGS: UserSettings = {
   includePunctuation: false,
   theme: 'light',
   customText: SAMPLE_CUSTOM_TEXTS[0].text,
+  freeHandChars: ['ক', 'ত'],
 };
+
+export function createEmptyFreeHandStats(): FreeHandStats {
+  return {
+    totalLessons: 0,
+    totalCharsTyped: 0,
+    totalDurationMs: 0,
+    topWpm: 0,
+    keyStats: {},
+    dailyStats: {},
+  };
+}
 
 export function createInitialProfile(email = '', displayName = 'Bangla Learner'): ProfileData {
   return {
@@ -48,6 +62,7 @@ export function createInitialProfile(email = '', displayName = 'Bangla Learner')
     keyStats: {},
     lessons: [],
     dailyStats: {},
+    freeHandStats: createEmptyFreeHandStats(),
   };
 }
 
@@ -84,6 +99,7 @@ export function loadProfile(): ProfileData {
         parsed.unlockedChars && parsed.unlockedChars.length >= STARTER_BANGLA_CHARS.length
           ? parsed.unlockedChars
           : [...STARTER_BANGLA_CHARS],
+      freeHandStats: parsed.freeHandStats || createEmptyFreeHandStats(),
     };
   } catch {
     return createInitialProfile();
@@ -195,12 +211,98 @@ const BANGLA_DIGITS = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '
 /**
  * Generates an adaptive lesson of Bangla words tailored to the user's current unlocked set & focus character.
  */
+const DEPENDENT_SIGNS = new Set([
+  'া', 'ি', 'ী', 'ু', 'ূ', 'ৃ', 'ে', 'ৈ', 'ো', 'ৌ', 'ং', 'ঃ', 'ঁ', '্',
+]);
+
+function generateFreeHandWords(selectedChars: string[], wordCount: number): WordToken[] {
+  const pool = Array.from(new Set(selectedChars)).filter((c) => c.length > 0);
+  const effectivePool = pool.length >= 2 ? pool : ['ক', 'ত'];
+
+  const bases = effectivePool.filter((c) => !DEPENDENT_SIGNS.has(c));
+  const signs = effectivePool.filter((c) => DEPENDENT_SIGNS.has(c));
+  const selectedSet = new Set(effectivePool);
+  const matchingRealWords = BANGLA_WORDS.filter((w) => isWordAllowed(w, selectedSet));
+
+  const picked: string[] = [];
+
+  for (let i = 0; i < wordCount; i++) {
+    // Mix in real words occasionally when >= 3 chars yield natural matches
+    if (matchingRealWords.length >= 3 && i % 3 === 2) {
+      picked.push(matchingRealWords[Math.floor(Math.random() * matchingRealWords.length)]);
+      continue;
+    }
+
+    const len = 2 + (i % 3); // 2, 3, or 4 chars for rhythmic hand drills
+    let token = '';
+
+    if (bases.length > 0 && signs.length > 0) {
+      // Build natural consonant/vowel + kar combinations without broken leading kar signs
+      for (let j = 0; j < len; j++) {
+        const prevChar = token ? Array.from(token).pop() || '' : '';
+        const prevIsSign = DEPENDENT_SIGNS.has(prevChar);
+
+        if (j === 0 || prevIsSign || Math.random() < 0.55) {
+          token += bases[Math.floor(Math.random() * bases.length)];
+        } else {
+          const sign = signs[Math.floor(Math.random() * signs.length)];
+          if (sign === '্') {
+            // Hasanta should connect two consonants
+            token += '্' + bases[Math.floor(Math.random() * bases.length)];
+            j++;
+          } else {
+            token += sign;
+          }
+        }
+      }
+    } else if (bases.length >= 2) {
+      // Pure base-character combinations (e.g., কত, তক, কতক, তকত, কতকত)
+      if (bases.length === 2 && i < 6) {
+        const [a, b] = bases;
+        const patterns = [`${a}${b}`, `${b}${a}`, `${a}${b}${a}`, `${b}${a}${b}`, `${a}${a}${b}`, `${b}${b}${a}`];
+        token = patterns[i % patterns.length];
+      } else {
+        for (let j = 0; j < len; j++) {
+          token += bases[Math.floor(Math.random() * bases.length)];
+        }
+      }
+    } else {
+      for (let j = 0; j < len; j++) {
+        token += effectivePool[Math.floor(Math.random() * effectivePool.length)];
+      }
+    }
+
+    // Ensure at least 2 distinct characters appear frequently across short drills
+    if (picked.length > 0 && token === picked[picked.length - 1] && effectivePool.length >= 2) {
+      const reversed = Array.from(token).reverse().join('');
+      if (reversed !== token && !DEPENDENT_SIGNS.has(Array.from(reversed)[0] || '')) {
+        token = reversed;
+      }
+    }
+
+    picked.push(token);
+  }
+
+  return tokenizeWords(picked.join(' '));
+}
+
 export function generateLessonWords(
   profile: ProfileData,
   settings: UserSettings
 ): { words: WordToken[]; focusChar: string | null } {
   const mode: PracticeMode = settings.practiceMode;
   const wordCount = Math.max(8, Math.min(45, settings.lessonWordCount));
+
+  if (mode === 'freehand') {
+    const chars =
+      settings.freeHandChars && settings.freeHandChars.length >= 2
+        ? settings.freeHandChars
+        : ['ক', 'ত'];
+    return {
+      words: generateFreeHandWords(chars, wordCount),
+      focusChar: chars[0] || null,
+    };
+  }
 
   if (mode === 'custom') {
     const custom = settings.customText.trim() || SAMPLE_CUSTOM_TEXTS[0].text;
@@ -309,13 +411,12 @@ export function formatDuration(ms: number): string {
   return `${secs}s`;
 }
 
-export function recordLessonResult(
-  profile: ProfileData,
-  lesson: LessonRecord,
+function mergeKeyStats(
+  existingStats: Record<string, KeyStats>,
   perCharUpdates: Record<string, { hits: number; misses: number; totalTimeMs: number }>,
-  targetWpm: number
-): { updatedProfile: ProfileData; newlyUnlocked: string | null } {
-  const nextKeyStats: Record<string, KeyStats> = { ...profile.keyStats };
+  timestamp: number
+): Record<string, KeyStats> {
+  const nextKeyStats: Record<string, KeyStats> = { ...existingStats };
 
   for (const [ch, delta] of Object.entries(perCharUpdates)) {
     const prev = nextKeyStats[ch] || {
@@ -324,7 +425,7 @@ export function recordLessonResult(
       misses: 0,
       totalTimeMs: 0,
       recentWpm: 0,
-      lastPracticedAt: lesson.timestamp,
+      lastPracticedAt: timestamp,
     };
 
     const hits = prev.hits + delta.hits;
@@ -344,12 +445,19 @@ export function recordLessonResult(
       misses,
       totalTimeMs,
       recentWpm: sessionCharWpm,
-      lastPracticedAt: lesson.timestamp,
+      lastPracticedAt: timestamp,
     };
   }
 
+  return nextKeyStats;
+}
+
+function mergeDailyStats(
+  existingDaily: Record<string, DailyPracticeStat>,
+  lesson: LessonRecord
+): Record<string, DailyPracticeStat> {
   const dateKey = getTodayDateKey(lesson.timestamp);
-  const prevDaily = profile.dailyStats[dateKey] || {
+  const prevDaily = existingDaily[dateKey] || {
     date: dateKey,
     durationMs: 0,
     lessons: 0,
@@ -360,24 +468,64 @@ export function recordLessonResult(
   const nextDailyAvgWpm =
     (prevDaily.avgWpm * prevDaily.lessons + lesson.wpm) / nextDailyLessons;
 
+  return {
+    ...existingDaily,
+    [dateKey]: {
+      date: dateKey,
+      durationMs: prevDaily.durationMs + lesson.durationMs,
+      lessons: nextDailyLessons,
+      charsTyped: prevDaily.charsTyped + lesson.charCount,
+      avgWpm: Math.round(nextDailyAvgWpm * 10) / 10,
+    },
+  };
+}
+
+export function recordLessonResult(
+  profile: ProfileData,
+  lesson: LessonRecord,
+  perCharUpdates: Record<string, { hits: number; misses: number; totalTimeMs: number }>,
+  targetWpm: number
+): { updatedProfile: ProfileData; newlyUnlocked: string | null } {
+  // Free Hand mode maintains its own isolated statistics and never alters main DPSbr stats
+  if (lesson.mode === 'freehand') {
+    const prevFree = profile.freeHandStats || createEmptyFreeHandStats();
+    const nextFreeKeyStats = mergeKeyStats(
+      prevFree.keyStats || {},
+      perCharUpdates,
+      lesson.timestamp
+    );
+    const nextFreeDailyStats = mergeDailyStats(prevFree.dailyStats || {}, lesson);
+
+    const nextProfile: ProfileData = {
+      ...profile,
+      lessons: [lesson, ...profile.lessons].slice(0, 300),
+      freeHandStats: {
+        totalLessons: (prevFree.totalLessons || 0) + 1,
+        totalCharsTyped: (prevFree.totalCharsTyped || 0) + Math.round(lesson.charCount),
+        totalDurationMs: (prevFree.totalDurationMs || 0) + Math.round(lesson.durationMs),
+        topWpm: Math.min(400, Math.max(prevFree.topWpm || 0, lesson.wpm)),
+        keyStats: nextFreeKeyStats,
+        dailyStats: nextFreeDailyStats,
+      },
+    };
+
+    return { updatedProfile: nextProfile, newlyUnlocked: null };
+  }
+
+  // Main DPSbr modes (guided, all, conjuncts, custom)
+  const nextKeyStats = mergeKeyStats(profile.keyStats, perCharUpdates, lesson.timestamp);
+  const nextDailyStats = mergeDailyStats(profile.dailyStats, lesson);
+  const existingMainLessons = profile.lessons.filter((l) => l.mode !== 'freehand').length;
+
   let nextProfile: ProfileData = {
     ...profile,
-    totalLessons: (profile.totalLessons || profile.lessons.length) + 1,
+    totalLessons: Math.max(profile.totalLessons || 0, existingMainLessons) + 1,
     totalCharsTyped: (profile.totalCharsTyped || 0) + Math.round(lesson.charCount),
     totalDurationMs: (profile.totalDurationMs || 0) + Math.round(lesson.durationMs),
-    topWpm: Math.max(profile.topWpm || 0, lesson.wpm),
+    topWpm: Math.min(400, Math.max(profile.topWpm || 0, lesson.wpm)),
     keyStats: nextKeyStats,
     lessons: [lesson, ...profile.lessons].slice(0, 300),
-    dailyStats: {
-      ...profile.dailyStats,
-      [dateKey]: {
-        date: dateKey,
-        durationMs: prevDaily.durationMs + lesson.durationMs,
-        lessons: nextDailyLessons,
-        charsTyped: prevDaily.charsTyped + lesson.charCount,
-        avgWpm: Math.round(nextDailyAvgWpm * 10) / 10,
-      },
-    },
+    dailyStats: nextDailyStats,
   };
 
   if (lesson.mode === 'guided') {
