@@ -158,6 +158,7 @@ service cloud.firestore {
           'totalDurationMs',
           'topWpm',
           'unlockedChars',
+          'ignoredChars',
           'manualFocusChar',
           'keyStats',
           'dailyStats',
@@ -167,6 +168,11 @@ service cloud.firestore {
           'updatedAt'
         ])
         && (!('freeHandStats' in data) || isValidFreeHandStats(data.freeHandStats))
+        && (!('ignoredChars' in data) || (
+          data.ignoredChars is list
+          && data.ignoredChars.size() <= 64
+          && (data.ignoredChars.size() == 0 || (data.ignoredChars[0] is string && data.ignoredChars[0].size() <= 4))
+        ))
         && data.ownerId is string
         && data.ownerId.size() <= 128
         && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
@@ -291,7 +297,21 @@ service cloud.firestore {
           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'updatedAt'])
           || incoming().diff(existing()).affectedKeys().hasOnly(['settings', 'updatedAt'])
           || incoming().diff(existing()).affectedKeys().hasOnly(['unlockedChars', 'manualFocusChar', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['unlockedChars', 'ignoredChars', 'manualFocusChar', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['ignoredChars', 'manualFocusChar', 'updatedAt'])
           || incoming().diff(existing()).affectedKeys().hasOnly(['freeHandStats', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly([
+            'totalLessons',
+            'totalCharsTyped',
+            'totalDurationMs',
+            'topWpm',
+            'unlockedChars',
+            'ignoredChars',
+            'manualFocusChar',
+            'keyStats',
+            'dailyStats',
+            'updatedAt'
+          ])
           || incoming().diff(existing()).affectedKeys().hasOnly([
             'totalLessons',
             'totalCharsTyped',
@@ -310,6 +330,7 @@ service cloud.firestore {
             'totalDurationMs',
             'topWpm',
             'unlockedChars',
+            'ignoredChars',
             'manualFocusChar',
             'keyStats',
             'dailyStats',

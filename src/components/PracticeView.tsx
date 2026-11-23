@@ -1,5 +1,6 @@
 import {
   CheckCircle2,
+  EyeOff,
   Keyboard as KeyboardIcon,
   Lock,
   Moon,
@@ -31,9 +32,11 @@ import {
 } from '../types/typing';
 import {
   generateLessonWords,
+  getActiveUnlockedChars,
   getCharAverageWpm,
   getCharConfidence,
   getCharErrorRate,
+  getReadyToUnlockChar,
   getTodayDateKey,
 } from '../utils/adaptiveEngine';
 import { soundEffects } from '../utils/soundEffects';
@@ -48,7 +51,8 @@ interface PracticeViewProps {
     perCharUpdates: Record<string, { hits: number; misses: number; totalTimeMs: number }>
   ) => string | null;
   onSelectFocusChar: (ch: string | null) => void;
-  onUnlockUpToChar: (ch: string) => void;
+  onUnlockSingleChar: (ch: string) => void;
+  onToggleIgnoreChar: (ch: string) => void;
   onOpenProfile: (section?: 'main' | 'freehand') => void;
   onOpenSettings: () => void;
 }
@@ -66,7 +70,8 @@ export function PracticeView({
   onUpdateSettings,
   onCompleteLesson,
   onSelectFocusChar,
-  onUnlockUpToChar,
+  onUnlockSingleChar,
+  onToggleIgnoreChar,
   onOpenProfile,
   onOpenSettings,
 }: PracticeViewProps) {
@@ -178,17 +183,40 @@ export function PracticeView({
   );
 
   const [freeHandNotice, setFreeHandNotice] = useState<string | null>(null);
+  const [ignoreMode, setIgnoreMode] = useState(false);
+  const [guidedNotice, setGuidedNotice] = useState<string | null>(null);
+  const [pendingPermission, setPendingPermission] = useState<{
+    char: string;
+    index: number;
+    type: 'unlock' | 'restore';
+  } | null>(null);
+  const [dismissedUnlockChar, setDismissedUnlockChar] = useState<string | null>(null);
 
-  // Regenerate lesson when key mode/layout/customText/wordCount/freeHandChars changes
+  const ignoredSet = useMemo(
+    () => new Set(profile.ignoredChars || []),
+    [profile.ignoredChars]
+  );
+  const activeUnlockedChars = useMemo(
+    () => getActiveUnlockedChars(profile),
+    [profile]
+  );
+  const readyToUnlockChar = useMemo(
+    () => getReadyToUnlockChar(profile, settings.targetWpm),
+    [profile, settings.targetWpm]
+  );
+
+  // Regenerate lesson when key mode/layout/customText/wordCount/freeHandChars/unlocked/ignored changes
   const freeHandKey = (settings.freeHandChars || ['ক', 'ত']).join(',');
+  const unlockedKey = profile.unlockedChars.join(',');
+  const ignoredKey = (profile.ignoredChars || []).join(',');
   const prevSettingsKey = useRef(
-    `${settings.practiceMode}-${settings.lessonWordCount}-${settings.includePunctuation}-${settings.customText}-${profile.manualFocusChar}-${freeHandKey}`
+    `${settings.practiceMode}-${settings.lessonWordCount}-${settings.includePunctuation}-${settings.customText}-${profile.manualFocusChar}-${freeHandKey}-${unlockedKey}-${ignoredKey}`
   );
   useEffect(() => {
-    const nextKey = `${settings.practiceMode}-${settings.lessonWordCount}-${settings.includePunctuation}-${settings.customText}-${profile.manualFocusChar}-${freeHandKey}`;
+    const nextKey = `${settings.practiceMode}-${settings.lessonWordCount}-${settings.includePunctuation}-${settings.customText}-${profile.manualFocusChar}-${freeHandKey}-${unlockedKey}-${ignoredKey}`;
     if (nextKey !== prevSettingsKey.current) {
       prevSettingsKey.current = nextKey;
-      resetLesson();
+      resetLesson(true);
     }
   }, [
     settings.practiceMode,
@@ -197,6 +225,8 @@ export function PracticeView({
     settings.customText,
     profile.manualFocusChar,
     freeHandKey,
+    unlockedKey,
+    ignoredKey,
     resetLesson,
   ]);
 
@@ -246,6 +276,7 @@ export function PracticeView({
       };
 
       const unlocked = onCompleteLesson(record, perCharStatsRef.current);
+      setDismissedUnlockChar(null);
       if (unlocked && settings.soundEnabled) {
         soundEffects.playUnlockChime();
       }
@@ -647,9 +678,11 @@ export function PracticeView({
       {settings.practiceMode === 'guided' && (
         <section aria-label="Bangla Character Mastery Strip" className="space-y-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="font-medium text-slate-700 dark:text-slate-200">
-                Adaptive Keys ({profile.unlockedChars.length}/{BANGLA_LESSON_CHARS.length} unlocked)
+                Adaptive Keys ({activeUnlockedChars.length} active · {profile.unlockedChars.length}/
+                {BANGLA_LESSON_CHARS.length} unlocked
+                {ignoredSet.size > 0 ? ` · ${ignoredSet.size} ignored` : ''})
               </span>
               {focusChar && (
                 <>
@@ -668,30 +701,225 @@ export function PracticeView({
                 </>
               )}
             </div>
-            {profile.manualFocusChar && (
+
+            <div className="flex flex-wrap items-center gap-2">
+              {focusChar && activeUnlockedChars.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGuidedNotice(null);
+                    setPendingPermission(null);
+                    onToggleIgnoreChar(focusChar);
+                  }}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:border-amber-400 hover:text-amber-700 dark:hover:text-amber-300 transition-colors font-medium"
+                  title={`Skip ${focusChar} in Guided mode for now`}
+                >
+                  <EyeOff className="w-3 h-3" />
+                  <span>
+                    Ignore <span className="font-bangla">{focusChar}</span>
+                  </span>
+                </button>
+              )}
+
               <button
                 type="button"
-                onClick={() => onSelectFocusChar(null)}
-                className="text-sky-600 dark:text-sky-400 hover:underline font-medium"
+                onClick={() => {
+                  setIgnoreMode((v) => !v);
+                  setPendingPermission(null);
+                  setGuidedNotice(null);
+                }}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium transition-colors ${
+                  ignoreMode
+                    ? 'border-amber-400 dark:border-amber-600 bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200'
+                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:border-slate-300 dark:hover:border-slate-600'
+                }`}
               >
-                Return to auto-focus
+                <EyeOff className="w-3 h-3" />
+                <span>{ignoreMode ? 'Done Ignoring' : 'Ignore Keys'}</span>
               </button>
-            )}
+
+              {profile.manualFocusChar && (
+                <button
+                  type="button"
+                  onClick={() => onSelectFocusChar(null)}
+                  className="text-sky-600 dark:text-sky-400 hover:underline font-medium"
+                >
+                  Return to auto-focus
+                </button>
+              )}
+            </div>
           </div>
 
+          {ignoreMode && (
+            <div className="px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 flex flex-wrap items-center justify-between gap-2">
+              <span>
+                Ignore Mode active: click any letter below to skip or restore it in Guided practice (for example, ignore letters 7–9 and practice letter 10 directly).
+              </span>
+              <button
+                type="button"
+                onClick={() => setIgnoreMode(false)}
+                className="font-semibold underline shrink-0"
+              >
+                Exit Ignore Mode
+              </button>
+            </div>
+          )}
+
+          {guidedNotice && (
+            <div className="text-xs font-medium text-amber-700 dark:text-amber-300">
+              {guidedNotice}
+            </div>
+          )}
+
+          {/* Ask Permission Before Unlocking or Restoring Any Alphabet */}
+          {pendingPermission && (
+            <div className="p-3 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="space-y-0.5 text-slate-800 dark:text-slate-100">
+                <div className="font-semibold flex items-center gap-1.5">
+                  <Unlock className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+                  {pendingPermission.type === 'unlock' ? (
+                    <span>
+                      Permission to unlock #{pendingPermission.index + 1}{' '}
+                      <span className="font-bangla text-sm font-bold">
+                        {pendingPermission.char}
+                      </span>{' '}
+                      ({getCharNameEnglish(pendingPermission.char)})?
+                    </span>
+                  ) : (
+                    <span>
+                      #{pendingPermission.index + 1}{' '}
+                      <span className="font-bangla text-sm font-bold">
+                        {pendingPermission.char}
+                      </span>{' '}
+                      is ignored. Restore it to Guided practice?
+                    </span>
+                  )}
+                </div>
+                <p className="text-slate-600 dark:text-slate-300">
+                  {pendingPermission.type === 'unlock'
+                    ? `Only ${pendingPermission.char} will be unlocked and focused. Earlier locked letters will stay untouched.`
+                    : `Restoring ${pendingPermission.char} brings it back into your Guided word pool.`}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {pendingPermission.type === 'unlock' ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const ch = pendingPermission.char;
+                        setPendingPermission(null);
+                        onUnlockSingleChar(ch);
+                        if (settings.soundEnabled) soundEffects.playUnlockChime();
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-medium transition-colors"
+                    >
+                      Unlock Only <span className="font-bangla">{pendingPermission.char}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const ch = pendingPermission.char;
+                        setPendingPermission(null);
+                        onToggleIgnoreChar(ch);
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium transition-colors"
+                    >
+                      Ignore <span className="font-bangla">{pendingPermission.char}</span>
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const ch = pendingPermission.char;
+                      setPendingPermission(null);
+                      onToggleIgnoreChar(ch);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-medium transition-colors"
+                  >
+                    Restore <span className="font-bangla">{pendingPermission.char}</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPendingPermission(null)}
+                  className="px-2.5 py-1.5 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800 font-medium"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Ask Permission Before Mastery Progression Unlock */}
+          {readyToUnlockChar &&
+            dismissedUnlockChar !== readyToUnlockChar &&
+            pendingPermission?.char !== readyToUnlockChar && (
+              <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="space-y-0.5 text-emerald-950 dark:text-emerald-100">
+                  <div className="font-semibold flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                    <span>
+                      Active keys mastered! Unlock next alphabet{' '}
+                      <span className="font-bangla text-sm font-bold">{readyToUnlockChar}</span>{' '}
+                      ({getCharNameEnglish(readyToUnlockChar)})?
+                    </span>
+                  </div>
+                  <p className="text-emerald-800/80 dark:text-emerald-200/80">
+                    DPSbr asks permission before adding new letters to your Guided curriculum.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onUnlockSingleChar(readyToUnlockChar);
+                      setDismissedUnlockChar(null);
+                      if (settings.soundEnabled) soundEffects.playUnlockChime();
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium transition-colors"
+                  >
+                    Unlock <span className="font-bangla">{readyToUnlockChar}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onToggleIgnoreChar(readyToUnlockChar);
+                      setDismissedUnlockChar(null);
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 font-medium transition-colors"
+                  >
+                    Ignore <span className="font-bangla">{readyToUnlockChar}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDismissedUnlockChar(readyToUnlockChar)}
+                    className="px-2.5 py-1.5 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-emerald-100/70 dark:hover:bg-emerald-900/40 font-medium"
+                  >
+                    Not Now
+                  </button>
+                </div>
+              </div>
+            )}
+
           <div className="flex flex-wrap gap-1.5">
-            {BANGLA_LESSON_CHARS.slice(0, 38).map((ch) => {
+            {BANGLA_LESSON_CHARS.slice(0, 38).map((ch, idx) => {
               const isUnlocked = profile.unlockedChars.includes(ch);
-              const isFocus = focusChar === ch;
+              const isIgnored = ignoredSet.has(ch);
+              const isFocus = focusChar === ch && !isIgnored;
               const stats = profile.keyStats[ch];
               const conf = getCharConfidence(stats, settings.targetWpm);
               const wpm = getCharAverageWpm(stats);
               const errRate = getCharErrorRate(stats);
-              const isMastered = isUnlocked && conf >= 0.82;
+              const isMastered = isUnlocked && !isIgnored && conf >= 0.82;
 
               let tileClass =
                 'bg-slate-100/70 dark:bg-slate-900/50 border-slate-200/70 dark:border-slate-800/70 text-slate-400 dark:text-slate-600';
-              if (isUnlocked) {
+              if (isIgnored) {
+                tileClass =
+                  'border-dashed bg-slate-100/40 dark:bg-slate-900/30 border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-500 opacity-60';
+              } else if (isUnlocked) {
                 tileClass = isMastered
                   ? 'bg-emerald-50/80 dark:bg-emerald-950/35 border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
                   : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100';
@@ -700,29 +928,58 @@ export function PracticeView({
                 tileClass =
                   'bg-sky-50 dark:bg-sky-950/50 border-sky-500 dark:border-sky-400 text-sky-900 dark:text-sky-100 ring-2 ring-sky-500/25';
               }
+              if (pendingPermission?.char === ch) {
+                tileClass += ' ring-2 ring-amber-400 dark:ring-amber-500';
+              }
 
               return (
                 <button
                   key={ch}
                   type="button"
                   onClick={() => {
+                    setGuidedNotice(null);
+                    if (ignoreMode) {
+                      if (!isIgnored && isUnlocked && activeUnlockedChars.length <= 1) {
+                        setGuidedNotice(
+                          'Keep at least 1 active character in Guided mode.'
+                        );
+                        return;
+                      }
+                      onToggleIgnoreChar(ch);
+                      return;
+                    }
+
+                    if (isIgnored) {
+                      setPendingPermission({ char: ch, index: idx, type: 'restore' });
+                      return;
+                    }
+
                     if (isUnlocked) {
+                      setPendingPermission(null);
                       onSelectFocusChar(profile.manualFocusChar === ch ? null : ch);
                     } else {
-                      onUnlockUpToChar(ch);
+                      setPendingPermission({ char: ch, index: idx, type: 'unlock' });
                     }
                   }}
                   title={
-                    isUnlocked
-                      ? `${ch} (${getCharNameEnglish(ch)}) — ${wpm} WPM, ${errRate.toFixed(1)}% err. Click to focus.`
-                      : `${ch} (${getCharNameEnglish(ch)}) — Locked. Click to unlock up to here.`
+                    ignoreMode
+                      ? `#${idx + 1} ${ch} (${getCharNameEnglish(ch)}) — Click to ${
+                          isIgnored ? 'restore' : 'ignore'
+                        }`
+                      : isIgnored
+                      ? `#${idx + 1} ${ch} (${getCharNameEnglish(ch)}) — Ignored. Click to restore.`
+                      : isUnlocked
+                      ? `#${idx + 1} ${ch} (${getCharNameEnglish(ch)}) — ${wpm} WPM, ${errRate.toFixed(1)}% err. Click to focus.`
+                      : `#${idx + 1} ${ch} (${getCharNameEnglish(ch)}) — Locked. Click to request unlock.`
                   }
                   className={`relative w-9 h-10 rounded-lg border flex flex-col items-center justify-center transition-all ${tileClass} hover:border-sky-400 dark:hover:border-sky-500`}
                 >
                   <span className="font-bangla text-base font-semibold leading-none">
                     {ch}
                   </span>
-                  {isUnlocked ? (
+                  {isIgnored ? (
+                    <EyeOff className="w-2.5 h-2.5 mt-1 opacity-75" />
+                  ) : isUnlocked ? (
                     <span className="w-5 h-1 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden mt-1">
                       <span
                         className={`block h-full rounded-full ${

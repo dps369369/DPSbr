@@ -69,6 +69,16 @@ function sanitizeUnlockedChars(chars: string[]): string[] {
   return cleaned.length > 0 ? cleaned : [...STARTER_BANGLA_CHARS];
 }
 
+function sanitizeIgnoredChars(chars: string[]): string[] {
+  return Array.from(
+    new Set(
+      chars
+        .map((c) => String(c).slice(0, 4))
+        .filter((c) => c.length > 0)
+    )
+  ).slice(0, 64);
+}
+
 function trimKeyStats(keyStats: Record<string, KeyStats>): Record<string, KeyStats> {
   const entries = Object.entries(keyStats).slice(0, 115);
   return Object.fromEntries(entries);
@@ -117,6 +127,7 @@ export async function ensureUserDocument(
         totalDurationMs: 0,
         topWpm: 0,
         unlockedChars: [...STARTER_BANGLA_CHARS],
+        ignoredChars: [],
         manualFocusChar: '',
         keyStats: {},
         dailyStats: {},
@@ -162,6 +173,7 @@ export function subscribeToUserProfile(
         unlockedChars: Array.isArray(data.unlockedChars)
           ? data.unlockedChars
           : [...STARTER_BANGLA_CHARS],
+        ignoredChars: Array.isArray(data.ignoredChars) ? data.ignoredChars : [],
         manualFocusChar:
           typeof data.manualFocusChar === 'string' && data.manualFocusChar.length > 0
             ? data.manualFocusChar
@@ -325,12 +337,34 @@ export async function updateDisplayNameInFirestore(
 export async function updateFocusOrUnlockedInFirestore(
   uid: string,
   unlockedChars: string[],
+  manualFocusChar: string | null,
+  ignoredChars?: string[]
+): Promise<void> {
+  const userPath = `users/${uid}`;
+  try {
+    const payload: Record<string, unknown> = {
+      unlockedChars: sanitizeUnlockedChars(unlockedChars),
+      manualFocusChar: (manualFocusChar || '').slice(0, 4),
+      updatedAt: serverTimestamp(),
+    };
+    if (ignoredChars !== undefined) {
+      payload.ignoredChars = sanitizeIgnoredChars(ignoredChars);
+    }
+    await updateDoc(doc(db, 'users', uid), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, userPath);
+  }
+}
+
+export async function updateIgnoredCharsInFirestore(
+  uid: string,
+  ignoredChars: string[],
   manualFocusChar: string | null
 ): Promise<void> {
   const userPath = `users/${uid}`;
   try {
     await updateDoc(doc(db, 'users', uid), {
-      unlockedChars: sanitizeUnlockedChars(unlockedChars),
+      ignoredChars: sanitizeIgnoredChars(ignoredChars),
       manualFocusChar: (manualFocusChar || '').slice(0, 4),
       updatedAt: serverTimestamp(),
     });
@@ -370,6 +404,7 @@ export async function importProfileToFirestore(
     totalDurationMs: Math.max(0, totalDurationMs),
     topWpm: Math.min(400, Math.max(0, topWpm)),
     unlockedChars: sanitizeUnlockedChars(imported.unlockedChars || []),
+    ignoredChars: sanitizeIgnoredChars(imported.ignoredChars || []),
     manualFocusChar: (imported.manualFocusChar || '').slice(0, 4),
     keyStats: trimKeyStats(imported.keyStats || {}),
     dailyStats: trimDailyStats(imported.dailyStats || {}),
@@ -428,6 +463,7 @@ export async function resetMainProfileInFirestore(uid: string): Promise<void> {
       totalDurationMs: 0,
       topWpm: 0,
       unlockedChars: [...STARTER_BANGLA_CHARS],
+      ignoredChars: [],
       manualFocusChar: '',
       keyStats: {},
       dailyStats: {},

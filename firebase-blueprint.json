@@ -42,6 +42,10 @@
           "type": "array",
           "description": "List of unlocked Bangla characters in the adaptive curriculum."
         },
+        "ignoredChars": {
+          "type": "array",
+          "description": "List of Bangla characters intentionally ignored/skipped by the user in Guided practice."
+        },
         "manualFocusChar": {
           "type": "string",
           "maxLength": 4,

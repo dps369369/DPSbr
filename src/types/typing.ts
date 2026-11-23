@@ -121,6 +121,7 @@ export interface ProfileData {
   totalDurationMs: number;
   topWpm: number;
   unlockedChars: string[];
+  ignoredChars: string[];
   manualFocusChar: string | null;
   keyStats: Record<string, KeyStats>;
   lessons: LessonRecord[];

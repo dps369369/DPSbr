@@ -32,6 +32,7 @@ import {
   subscribeToUserProfile,
   updateDisplayNameInFirestore,
   updateFocusOrUnlockedInFirestore,
+  updateIgnoredCharsInFirestore,
   updateSettingsInFirestore,
 } from './utils/firestoreSync';
 
@@ -216,25 +217,71 @@ function DPSbrApp() {
     [user]
   );
 
-  const handleUnlockUpToChar = useCallback(
+  const handleUnlockSingleChar = useCallback(
     (ch: string) => {
-      const targetIdx = BANGLA_LESSON_CHARS.indexOf(ch);
-      if (targetIdx === -1) return;
+      if (!BANGLA_LESSON_CHARS.includes(ch)) return;
       setProfile((prev) => {
         const merged = new Set(prev.unlockedChars);
-        for (let i = 0; i <= targetIdx; i++) {
-          merged.add(BANGLA_LESSON_CHARS[i]);
-        }
+        merged.add(ch);
         const nextUnlocked = BANGLA_LESSON_CHARS.filter((c) => merged.has(c));
+        const nextIgnored = (prev.ignoredChars || []).filter((c) => c !== ch);
         if (user) {
-          void updateFocusOrUnlockedInFirestore(user.uid, nextUnlocked, ch).catch((err) =>
+          void updateFocusOrUnlockedInFirestore(
+            user.uid,
+            nextUnlocked,
+            ch,
+            nextIgnored
+          ).catch((err) =>
             setSyncError(err instanceof Error ? err : new Error(String(err)))
           );
         }
         return {
           ...prev,
           unlockedChars: nextUnlocked,
+          ignoredChars: nextIgnored,
           manualFocusChar: ch,
+        };
+      });
+    },
+    [user]
+  );
+
+  const handleToggleIgnoreChar = useCallback(
+    (ch: string) => {
+      setProfile((prev) => {
+        const prevIgnored = prev.ignoredChars || [];
+        const isCurrentlyIgnored = prevIgnored.includes(ch);
+
+        let nextIgnored: string[];
+        if (isCurrentlyIgnored) {
+          nextIgnored = prevIgnored.filter((c) => c !== ch);
+        } else {
+          // Ensure at least 1 unlocked non-ignored character remains active in Guided mode
+          const remainingActive = prev.unlockedChars.filter(
+            (u) => u !== ch && !prevIgnored.includes(u)
+          );
+          if (remainingActive.length === 0) {
+            return prev;
+          }
+          nextIgnored = [...prevIgnored, ch];
+        }
+
+        const nextManualFocus =
+          !isCurrentlyIgnored && prev.manualFocusChar === ch ? null : prev.manualFocusChar;
+
+        if (user) {
+          void updateIgnoredCharsInFirestore(
+            user.uid,
+            nextIgnored,
+            nextManualFocus
+          ).catch((err) =>
+            setSyncError(err instanceof Error ? err : new Error(String(err)))
+          );
+        }
+        return {
+          ...prev,
+          ignoredChars: nextIgnored,
+          manualFocusChar: nextManualFocus,
         };
       });
     },
@@ -243,11 +290,11 @@ function DPSbrApp() {
 
   const handlePracticeCharFromProfile = useCallback(
     (ch: string) => {
-      handleUnlockUpToChar(ch);
+      handleUnlockSingleChar(ch);
       handleUpdateSettings({ practiceMode: 'guided' });
       handleSelectTab('practice');
     },
-    [handleUnlockUpToChar, handleUpdateSettings, handleSelectTab]
+    [handleUnlockSingleChar, handleUpdateSettings, handleSelectTab]
   );
 
   const handlePracticeFreeHandCharFromProfile = useCallback(
@@ -316,7 +363,8 @@ function DPSbrApp() {
             onUpdateSettings={handleUpdateSettings}
             onCompleteLesson={handleCompleteLesson}
             onSelectFocusChar={handleSelectFocusChar}
-            onUnlockUpToChar={handleUnlockUpToChar}
+            onUnlockSingleChar={handleUnlockSingleChar}
+            onToggleIgnoreChar={handleToggleIgnoreChar}
             onOpenProfile={(section = 'main') => {
               setProfileSection(section);
               handleSelectTab('profile');

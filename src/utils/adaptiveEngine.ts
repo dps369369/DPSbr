@@ -58,6 +58,7 @@ export function createInitialProfile(email = '', displayName = 'Bangla Learner')
     totalDurationMs: 0,
     topWpm: 0,
     unlockedChars: [...STARTER_BANGLA_CHARS],
+    ignoredChars: [],
     manualFocusChar: null,
     keyStats: {},
     lessons: [],
@@ -99,6 +100,7 @@ export function loadProfile(): ProfileData {
         parsed.unlockedChars && parsed.unlockedChars.length >= STARTER_BANGLA_CHARS.length
           ? parsed.unlockedChars
           : [...STARTER_BANGLA_CHARS],
+      ignoredChars: Array.isArray(parsed.ignoredChars) ? parsed.ignoredChars : [],
       freeHandStats: parsed.freeHandStats || createEmptyFreeHandStats(),
     };
   } catch {
@@ -144,19 +146,33 @@ export function getCharErrorRate(stats: KeyStats | undefined): number {
   return (stats.misses / total) * 100;
 }
 
+export function getActiveUnlockedChars(profile: ProfileData): string[] {
+  const ignoredSet = new Set(profile.ignoredChars || []);
+  const active = profile.unlockedChars.filter((ch) => !ignoredSet.has(ch));
+  return active.length > 0 ? active : [profile.unlockedChars[0] || STARTER_BANGLA_CHARS[0]];
+}
+
 /**
  * Determines the current active focus character:
- * Either user's manually selected focus character, or the unlocked character with lowest confidence.
+ * Either user's manually selected focus character (if unlocked and not ignored),
+ * or the active unlocked character with lowest confidence.
  */
 export function selectFocusChar(profile: ProfileData, targetWpm: number): string {
-  if (profile.manualFocusChar && profile.unlockedChars.includes(profile.manualFocusChar)) {
+  const activeChars = getActiveUnlockedChars(profile);
+  const ignoredSet = new Set(profile.ignoredChars || []);
+
+  if (
+    profile.manualFocusChar &&
+    profile.unlockedChars.includes(profile.manualFocusChar) &&
+    !ignoredSet.has(profile.manualFocusChar)
+  ) {
     return profile.manualFocusChar;
   }
 
-  let weakest = profile.unlockedChars[profile.unlockedChars.length - 1] || STARTER_BANGLA_CHARS[0];
+  let weakest = activeChars[activeChars.length - 1] || STARTER_BANGLA_CHARS[0];
   let lowestConf = Infinity;
 
-  for (const ch of profile.unlockedChars) {
+  for (const ch of activeChars) {
     const conf = getCharConfidence(profile.keyStats[ch], targetWpm);
     if (conf < lowestConf) {
       lowestConf = conf;
@@ -167,26 +183,36 @@ export function selectFocusChar(profile: ProfileData, targetWpm: number): string
 }
 
 /**
- * Checks if all unlocked keys have reached sufficient confidence (>= 0.85) to unlock the next Bangla key.
+ * Returns the next curriculum character eligible for unlock if all active (unlocked & non-ignored)
+ * keys have reached confidence >= 0.82. Never unlocks automatically; UI must ask user permission.
  */
-export function checkAndUnlockNextChar(
+export function getReadyToUnlockChar(
   profile: ProfileData,
   targetWpm: number
-): { updatedProfile: ProfileData; newlyUnlocked: string | null } {
-  if (profile.unlockedChars.length >= BANGLA_LESSON_CHARS.length) {
-    return { updatedProfile: profile, newlyUnlocked: null };
-  }
+): string | null {
+  const activeChars = getActiveUnlockedChars(profile);
+  const ignoredSet = new Set(profile.ignoredChars || []);
 
-  const allReady = profile.unlockedChars.every((ch) => {
+  const allReady = activeChars.every((ch) => {
     const conf = getCharConfidence(profile.keyStats[ch], targetWpm);
     return conf >= 0.82;
   });
 
   if (!allReady) {
-    return { updatedProfile: profile, newlyUnlocked: null };
+    return null;
   }
 
-  const nextChar = BANGLA_LESSON_CHARS.find((ch) => !profile.unlockedChars.includes(ch));
+  const nextChar = BANGLA_LESSON_CHARS.find(
+    (ch) => !profile.unlockedChars.includes(ch) && !ignoredSet.has(ch)
+  );
+  return nextChar || null;
+}
+
+export function checkAndUnlockNextChar(
+  profile: ProfileData,
+  targetWpm: number
+): { updatedProfile: ProfileData; newlyUnlocked: string | null } {
+  const nextChar = getReadyToUnlockChar(profile, targetWpm);
   if (!nextChar) {
     return { updatedProfile: profile, newlyUnlocked: null };
   }
@@ -347,31 +373,83 @@ export function generateLessonWords(
     };
   }
 
-  // Guided (Keybr adaptive) mode
+  // Guided (Keybr adaptive) mode — strictly respects ignoredChars and non-contiguous unlocked keys
+  const activeUnlocked = getActiveUnlockedChars(profile);
+  const ignoredSet = new Set(profile.ignoredChars || []);
   const focusChar = selectFocusChar(profile, settings.targetWpm);
-  const allowedSet = new Set(profile.unlockedChars);
+  const allowedSet = new Set(activeUnlocked);
 
-  let validWords = BANGLA_WORDS.filter((w) => isWordAllowed(w, allowedSet));
+  let validWords = BANGLA_WORDS.filter((w) => {
+    const chars = Array.from(w);
+    return !chars.some((c) => ignoredSet.has(c)) && chars.every((c) => allowedSet.has(c));
+  });
 
-  // If current newly unlocked letter has few full matches yet, expand slightly to words where at most 1 char is outside
+  // Expand slightly if very few strict matches exist, while still never using ignoredChars
   if (validWords.length < 8) {
-    validWords = BANGLA_WORDS.filter((w) => {
+    const nearMatches = BANGLA_WORDS.filter((w) => {
       const chars = Array.from(w);
+      if (chars.some((c) => ignoredSet.has(c))) return false;
       const missing = chars.filter((c) => !allowedSet.has(c));
       return missing.length <= 1;
     });
+    if (nearMatches.length > validWords.length) {
+      validWords = nearMatches;
+    }
   }
 
   const focusWords = validWords.filter((w) => w.includes(focusChar));
   const nonFocusWords = validWords.filter((w) => !w.includes(focusChar));
 
+  // If user skipped intermediate keys (e.g. mastered 1-6, skipped 7-9, unlocked 10th) and real words
+  // for focusChar + activeUnlocked are sparse, synthesize valid Bangla syllable combos with focusChar
+  const syntheticFocusCombos: string[] = [];
+  if (focusWords.length < 5) {
+    const activeBases = activeUnlocked.filter((c) => !DEPENDENT_SIGNS.has(c));
+    const activeSigns = activeUnlocked.filter((c) => DEPENDENT_SIGNS.has(c));
+    const focusIsSign = DEPENDENT_SIGNS.has(focusChar);
+
+    if (focusIsSign) {
+      const bases = activeBases.length > 0 ? activeBases : ['ক', 'ত'];
+      for (const b of bases.slice(0, 6)) {
+        if (focusChar === '্') {
+          const b2 = bases.find((x) => x !== b) || b;
+          syntheticFocusCombos.push(`${b}্${b2}`);
+        } else {
+          syntheticFocusCombos.push(`${b}${focusChar}`);
+          syntheticFocusCombos.push(`${b}${focusChar}${bases[0]}`);
+        }
+      }
+    } else {
+      const partnerBases = activeBases.filter((b) => b !== focusChar);
+      const fallbackPartner = partnerBases[0] || focusChar;
+      const sign = activeSigns.find((s) => s !== '্') || '';
+
+      for (const p of (partnerBases.length > 0 ? partnerBases : [fallbackPartner]).slice(0, 6)) {
+        syntheticFocusCombos.push(`${focusChar}${p}`);
+        syntheticFocusCombos.push(`${p}${focusChar}`);
+        if (sign) {
+          syntheticFocusCombos.push(`${focusChar}${sign}${p}`);
+          syntheticFocusCombos.push(`${p}${sign}${focusChar}`);
+        }
+      }
+    }
+  }
+
+  const effectiveFocusPool =
+    focusWords.length >= 4 ? focusWords : [...focusWords, ...syntheticFocusCombos];
+
   const picked: string[] = [];
   let lastWord = '';
 
   for (let i = 0; i < wordCount; i++) {
-    const useFocus = focusWords.length > 0 && (nonFocusWords.length === 0 || Math.random() < 0.7);
-    const source = useFocus ? focusWords : nonFocusWords;
-    let candidate = source[Math.floor(Math.random() * source.length)] || validWords[0] || 'কাম';
+    const useFocus =
+      effectiveFocusPool.length > 0 && (nonFocusWords.length === 0 || Math.random() < 0.72);
+    const source = useFocus ? effectiveFocusPool : nonFocusWords;
+    let candidate =
+      source[Math.floor(Math.random() * source.length)] ||
+      validWords[0] ||
+      syntheticFocusCombos[0] ||
+      `${focusChar}${activeUnlocked[0] || ''}`;
     if (source.length > 1 && candidate === lastWord) {
       candidate = source[(source.indexOf(candidate) + 1) % source.length];
     }
@@ -517,7 +595,7 @@ export function recordLessonResult(
   const nextDailyStats = mergeDailyStats(profile.dailyStats, lesson);
   const existingMainLessons = profile.lessons.filter((l) => l.mode !== 'freehand').length;
 
-  let nextProfile: ProfileData = {
+  const nextProfile: ProfileData = {
     ...profile,
     totalLessons: Math.max(profile.totalLessons || 0, existingMainLessons) + 1,
     totalCharsTyped: (profile.totalCharsTyped || 0) + Math.round(lesson.charCount),
@@ -528,20 +606,7 @@ export function recordLessonResult(
     dailyStats: nextDailyStats,
   };
 
-  if (lesson.mode === 'guided') {
-    const unlockCheck = checkAndUnlockNextChar(nextProfile, targetWpm);
-    nextProfile = unlockCheck.updatedProfile;
-    if (unlockCheck.newlyUnlocked && nextProfile.lessons.length > 0) {
-      nextProfile.lessons[0] = {
-        ...nextProfile.lessons[0],
-        unlockedChar: unlockCheck.newlyUnlocked,
-      };
-    }
-    return {
-      updatedProfile: nextProfile,
-      newlyUnlocked: unlockCheck.newlyUnlocked,
-    };
-  }
-
+  // Never auto-unlock characters silently: PracticeView asks user permission when readyToUnlockChar is ready
+  void targetWpm;
   return { updatedProfile: nextProfile, newlyUnlocked: null };
 }
